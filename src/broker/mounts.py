@@ -169,6 +169,16 @@ async def mount_readonly(env: SysEnv, devnode: str, major: int, minor: int, fs_t
     return entries[0]
 
 
+def open_mount_root(target: str, major: int, minor: int, fuse: bool = False) -> int:
+    """O_PATH handle on the mount root; verifies it is the expected filesystem."""
+    fd = os.open(target, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    st = os.fstat(fd)
+    if not fuse and st.st_dev != os.makedev(major, minor):
+        os.close(fd)
+        raise ProtocolError(E_MOUNT_FAILED, "mount root is not on the enumerated device")
+    return fd
+
+
 async def unmount(env: SysEnv, target: str, attempts: int = 3) -> None:
     """Unmount everything at/under target (deepest first). Never lazy-unmounts."""
     for _ in range(attempts):

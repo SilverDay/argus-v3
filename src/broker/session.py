@@ -7,6 +7,7 @@ used to select a device. Only one session may exist at a time (FR-USB-06).
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from src.shared.broker_protocol import E_NOT_FOUND, E_SESSION_CONFLICT, ProtocolError
@@ -29,6 +30,14 @@ class Session:
     device: UsbDevice
     partitions: dict[str, Partition] = field(default_factory=dict)
     mounts: dict[str, str] = field(default_factory=dict)   # partition_id -> mount path
+    root_fds: dict[str, int] = field(default_factory=dict) # partition_id -> O_PATH fd of mount root
+    opens: int = 0                                          # confined opens served (audited in aggregate)
+
+    def close_root_fds(self) -> None:
+        """Must happen before unmounting: any open fd keeps the mount busy."""
+        for fd in self.root_fds.values():
+            os.close(fd)
+        self.root_fds.clear()
 
 
 class SessionRegistry:

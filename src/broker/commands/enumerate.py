@@ -71,6 +71,7 @@ async def handle(ctx: BrokerContext, args: dict[str, Any]) -> dict[str, Any]:
                 "fs_type": result.fs_type,
                 "fs_uuid": result.fs_uuid,
                 "pt_type": result.pt_type,
+                "part_type": result.part_type,
                 "label": result.label,
                 "status": result.status.value,
             })

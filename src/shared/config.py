@@ -93,6 +93,16 @@ class DeviceConfig:
     internal_device_sysfs_prefixes: tuple[str, ...] = ()
     require_full_coverage: bool = True
     insertion_debounce_ms: int = field(default=500, metadata=_range(0, 10_000))
+    # FR-USB-04: partitions WITHOUT any filesystem signature whose partition type is listed
+    # here may be declared out of scope (still reported). GPT type GUID or MBR hex ("0x27").
+    excludable_partition_types: tuple[str, ...] = ()
+    excludable_partition_max_mb: int = field(default=128, metadata=_range(1, 4096))
+
+
+def normalise_partition_type(value: str) -> str:
+    """GUIDs lower-case; MBR types as libblkid prints them ("0x%x": "0x0c" -> "0xc")."""
+    v = value.strip().lower()
+    return f"0x{int(v, 16):x}" if v.startswith("0x") else v
 
 
 @dataclass(frozen=True)
@@ -166,6 +176,8 @@ class VirusTotalConfig:
     role: EngineRole = EngineRole.ADVISORY
     api_key_ref: str = field(default="", metadata=_secret_ref())
     on_quota_or_network_failure: FailurePolicy = FailurePolicy.CONTINUE
+    # Spec §6.2: mandatory mode needs a documented outage policy (document ID or URL).
+    network_outage_policy_ref: str = ""
     cache_ttl_days: int = field(default=7, metadata=_range(0, 365))
     rate_limit_per_minute: int = field(default=4, metadata=_range(1, 10_000))
     large_file_hash_budget_mb: int = field(default=4096, metadata=_range(1, 1_000_000))
@@ -362,6 +374,10 @@ def validate(cfg: Config) -> None:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", cfg.station.station_id):
         errors.append("station.station_id: must be 1-64 chars [A-Za-z0-9_.-]")
 
+    for ptype in cfg.device.excludable_partition_types:
+        if not re.fullmatch(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|0x[0-9a-f]{1,2}", ptype):
+            errors.append(f"device.excludable_partition_types: invalid partition type {ptype!r}")
+
     for name in ("socket_path", "mounts_dir", "audit_log"):
         value = getattr(cfg.broker, name)
         if not value.startswith("/") or ".." in value.split("/"):
@@ -383,6 +399,8 @@ def validate(cfg: Config) -> None:
             errors.append("virustotal.role=mandatory requires virustotal.api_key_ref")
         if vt.on_quota_or_network_failure not in (FailurePolicy.INCOMPLETE, FailurePolicy.ERROR):
             errors.append("virustotal.role=mandatory requires on_quota_or_network_failure in {incomplete, error}")
+        if not vt.network_outage_policy_ref.strip():
+            errors.append("virustotal.role=mandatory requires network_outage_policy_ref (documented outage policy)")
     if vt.enabled and not vt.api_key_ref:
         errors.append("virustotal.enabled=true requires virustotal.api_key_ref")
 

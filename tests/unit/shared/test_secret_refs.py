@@ -49,7 +49,18 @@ def test_credential_directory_missing(monkeypatch):
         resolve_secret("credential:vt_key")
 
 
+def test_env_secrets_refused_outside_dev_mode(tmp_path, monkeypatch):
+    monkeypatch.delenv("USB_SCAN_DEV", raising=False)
+    monkeypatch.setenv("USB_SCAN_TEST_SECRET", "from-env")
+    with pytest.raises(SecretError, match="USB_SCAN_DEV"):
+        resolve_secret("env:USB_SCAN_TEST_SECRET")
+    p = _secret_file(tmp_path)
+    monkeypatch.setenv("USB_SCAN_VT_KEY", "override")
+    assert resolve_secret(f"file:{p}", env_override="USB_SCAN_VT_KEY") == b"s3cret"   # override ignored
+
+
 def test_env_ref_and_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("USB_SCAN_DEV", "1")
     monkeypatch.setenv("USB_SCAN_TEST_SECRET", "from-env")
     assert resolve_secret("env:USB_SCAN_TEST_SECRET") == b"from-env"
     p = _secret_file(tmp_path)

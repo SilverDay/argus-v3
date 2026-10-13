@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.shared.config import Config
+from src.shared.config import Config, normalise_partition_type
 from src.shared.models import (
     CoverageMetrics, EventType, ScanEvent, ScanMetadata, ScanResult, SkipReason, ThreatEntry, Verdict, utc_now,
 )
@@ -52,6 +52,8 @@ class VolumeOutcome:
     partition_id: str
     status: str
     fs_type: str
+    part_type: str = ""
+    size_bytes: int = 0
     mounted: bool = False
     reason: str = ""
 
@@ -64,16 +66,15 @@ class DeviceInfo:
     capacity_bytes: int = 0
 
 
-def _sha256_file(path: str, limit: int) -> str:
+def _sha256_fd(fd: int, limit: int) -> str:
+    """Hash the exact file description that was scanned (no re-open, no TOCTOU)."""
     h = hashlib.sha256()
-    fd = open_for_scan(path)
-    with os.fdopen(fd, "rb") as fh:
-        read = 0
-        while chunk := fh.read(1024 * 1024):
-            h.update(chunk)
-            read += len(chunk)
-            if read > limit:
-                return ""
+    offset = 0
+    while chunk := os.pread(fd, 1024 * 1024, offset):
+        h.update(chunk)
+        offset += len(chunk)
+        if offset > limit:
+            return ""
     return h.hexdigest()
 
 
@@ -123,12 +124,19 @@ class ScanSession:
             raise DeviceRejected("capacity_exceeded",
                                  f"{self.device.capacity_bytes} bytes > {self.cfg.device.max_device_capacity_gb} GB")
         for v in res.get("volumes", []):
-            self.volumes.append(VolumeOutcome(str(v["partition_id"]), str(v["status"]), str(v.get("fs_type", ""))))
+            self.volumes.append(VolumeOutcome(str(v["partition_id"]), str(v["status"]), str(v.get("fs_type", "")),
+                                              str(v.get("part_type", "")), int(v.get("size_bytes", 0) or 0)))
         self.facts.coverage.partitions_discovered = len(self.volumes)
 
     async def mount_all(self) -> None:
         cov = self.facts.coverage
+        excludable = {normalise_partition_type(t) for t in self.cfg.device.excludable_partition_types}
         for vol in self.volumes:
+            if (vol.status == "unrecognized" and vol.part_type and normalise_partition_type(vol.part_type) in excludable
+                    and 0 < vol.size_bytes <= self.cfg.device.excludable_partition_max_mb * MB):
+                vol.reason = f"partition_out_of_scope:{vol.part_type}"
+                cov.partitions_out_of_scope += 1
+                continue
             if vol.status != "supported":
                 vol.reason = f"partition_{vol.status}"
                 cov.partitions_excluded += 1
@@ -150,7 +158,8 @@ class ScanSession:
         for pid, path in self.mounts:
             stats = inventory.InventoryStats()
             gen = inventory.walk(path, max_files=self.cfg.scan.max_files, max_depth=self.cfg.scan.max_depth,
-                                 max_bytes=self.cfg.scan.max_bytes_total_gb * GB, stats=stats)
+                                 max_bytes=self.cfg.scan.max_bytes_total_gb * GB, stats=stats,
+                                 privileged=self._privileged(pid))
             while True:
                 batch = await asyncio.to_thread(lambda: list(itertools.islice(gen, CHUNK)))
                 if not batch:
@@ -172,6 +181,8 @@ class ScanSession:
                 self.notes.append(f"{pid}:special_files={stats.special}")
             if stats.symlinks:
                 self.notes.append(f"{pid}:symlinks={stats.symlinks}")
+            if stats.privileged_opens:
+                self.notes.append(f"{pid}:privileged_opens={stats.privileged_opens}")
             cov.partitions_scanned += 1
         await self._progress(None, force=True)
 
@@ -191,13 +202,15 @@ class ScanSession:
         async with sem:
             if self.facts.appliance_fault:
                 return
-            try:
-                fd = await asyncio.to_thread(open_for_scan, entry.path)
-            except OSError:
+            fd = await asyncio.to_thread(self._open_file, pid, entry)
+            if fd is None:
                 cov.record_uninspectable(SkipReason.UNREADABLE)
                 return
             try:
                 result = await self.clamd.scan_fd(fd, float(self.cfg.clamav.per_file_timeout_seconds))
+                sha = ""
+                if result.status is ClamStatus.FOUND:
+                    sha = await asyncio.to_thread(self._safe_sha256, fd)
             except ClamdUnavailable as exc:
                 self.facts.appliance_fault = True
                 self.facts.engine_errors.append(f"clamd_unavailable:{exc}"[:200])
@@ -205,15 +218,14 @@ class ScanSession:
                 return
             finally:
                 os.close(fd)
-        await self._record(pid, entry, result)
+        await self._record(pid, entry, result, sha)
 
-    async def _record(self, pid: str, entry: inventory.FileEntry, result: ClamResult) -> None:
+    async def _record(self, pid: str, entry: inventory.FileEntry, result: ClamResult, sha: str = "") -> None:
         cov = self.facts.coverage
         if result.status in (ClamStatus.CLEAN, ClamStatus.FOUND):
             cov.files_scanned += 1
             cov.bytes_read += entry.size
         if result.status is ClamStatus.FOUND:
-            sha = await asyncio.to_thread(self._safe_sha256, entry.path)
             self.facts.threats.append(ThreatEntry(f"{pid}/{inventory.display_path(entry.rel)}", "clamav",
                                                   result.signature, sha, result.severity))
             await self.publish(ScanEvent(EventType.DETECTION, self.scan_id,
@@ -229,9 +241,32 @@ class ScanSession:
             cov.record_failed(SkipReason.ENGINE_ERROR)
             self.facts.engine_errors.append(f"clamd_error:{result.signature}"[:200])
 
-    def _safe_sha256(self, path: str) -> str:
+    def _privileged(self, pid: str) -> inventory.Privileged:
+        """Broker-confined open for content hidden by on-media permissions (blocking)."""
+        def opener(rel: bytes) -> tuple[str, int | None, int]:
+            try:
+                return self.broker.open_path(self.session_id, pid, rel)
+            except BrokerError:
+                return "unreadable", None, 0
+        return opener
+
+    def _open_file(self, pid: str, entry: inventory.FileEntry) -> int | None:
+        """Open for scanning: direct first, broker-confined open if permissions deny it."""
         try:
-            return _sha256_file(path, self.cfg.clamav.max_file_size_mb * MB)
+            return open_for_scan(entry.path)
+        except PermissionError:
+            kind, fd, _ = self._privileged(pid)(os.fsencode(entry.rel))
+            if kind == "file" and fd is not None:
+                return fd
+            if fd is not None:
+                os.close(fd)
+            return None
+        except OSError:
+            return None
+
+    def _safe_sha256(self, fd: int) -> str:
+        try:
+            return _sha256_fd(fd, self.cfg.clamav.max_file_size_mb * MB)
         except OSError:
             return ""
 

@@ -14,6 +14,12 @@ from ..context import BrokerContext, require_args
 
 
 async def unmount_session(ctx: BrokerContext, session_id: str) -> None:
+    active = ctx.sessions.active
+    if active is not None and active.session_id == session_id:
+        active.close_root_fds()
+        if active.opens:
+            ctx.audit.write("confined_opens", session_id=session_id, count=active.opens)
+            active.opens = 0
     session_dir = os.path.join(ctx.mounts_dir, session_id)
     try:
         await mounts.unmount(ctx.env, session_dir)

@@ -174,7 +174,7 @@ def _non_negative(name: str, value: int) -> None:
 
 
 _COUNTER_FIELDS = (
-    "partitions_discovered", "partitions_scanned", "partitions_excluded",
+    "partitions_discovered", "partitions_scanned", "partitions_excluded", "partitions_out_of_scope",
     "files_discovered", "files_scanned", "files_skipped", "files_failed",
     "files_uninspectable", "bytes_enumerated", "bytes_read",
 )
@@ -185,6 +185,7 @@ class CoverageMetrics:
     partitions_discovered: int = 0
     partitions_scanned: int = 0
     partitions_excluded: int = 0
+    partitions_out_of_scope: int = 0     # excluded by explicit deployment policy (FR-USB-04)
     files_discovered: int = 0
     files_scanned: int = 0
     files_skipped: int = 0

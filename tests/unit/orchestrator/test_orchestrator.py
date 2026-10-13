@@ -447,3 +447,44 @@ async def test_snapshot_for_new_clients(harness):
     await start(orch)
     (ev,) = orch.snapshot(GUI)
     assert ev.payload["state"] == "IDLE"
+
+
+# --- FR-USB-04 explicit partition-type exclusion ----------------------------
+
+MSR = "e3c9e316-0b5c-4db8-817d-f92df00215ae"
+
+
+def _broker_with(env, status, size):
+    b = FakeBroker({"part2": str(env["part1"])}, volumes=[
+        {"partition_id": "part1", "status": status, "fs_type": "", "part_type": MSR, "size_bytes": size},
+        {"partition_id": "part2", "status": "supported", "fs_type": "vfat", "part_type": "0xc", "size_bytes": 10**9},
+    ])
+    return b
+
+
+async def test_msr_without_policy_is_incomplete(harness, env):
+    orch, *_, events, sink = harness(broker=_broker_with(env, "unrecognized", 16 * 1024 * 1024))
+    await start(orch)
+    await run_scan(orch)
+    assert verdicts(events)[0]["verdict"] == "INCOMPLETE"
+
+
+async def test_msr_out_of_scope_by_policy_is_clean_and_reported(harness, env):
+    cfg = {"device": {"excludable_partition_types": [MSR.upper()]}}
+    orch, *_, events, sink = harness(cfg, broker=_broker_with(env, "unrecognized", 16 * 1024 * 1024))
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == "CLEAN"
+    assert v["coverage"]["partitions_out_of_scope"] == 1 and v["coverage"]["partitions_excluded"] == 0
+    assert f"partition_out_of_scope:{MSR}" in v["reason_codes"]
+
+
+@pytest.mark.parametrize("status,size", [("encrypted", 16 * 1024 * 1024),       # has a signature
+                                         ("unrecognized", 512 * 1024 * 1024)])  # above size cap
+async def test_policy_never_excludes_signatures_or_large_partitions(harness, env, status, size):
+    cfg = {"device": {"excludable_partition_types": [MSR]}}
+    orch, *_, events, sink = harness(cfg, broker=_broker_with(env, status, size))
+    await start(orch)
+    await run_scan(orch)
+    assert verdicts(events)[0]["verdict"] == "INCOMPLETE"

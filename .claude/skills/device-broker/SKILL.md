@@ -27,6 +27,9 @@ CAP_SYS_ADMIN + CAP_CHOWN after binding its socket, no_new_privs set.
 - unmount {session_id} → unmounts all, removes dirs, session stays open
 - eject {session_id} → requires unmounted; SCSI delete + USB `remove`; closes session
 - release {session_id} → unmount + close session without eject (device removed)
+- open {session_id, partition_id, path_b64} → {"type","size"} + read-only fd via SCM_RIGHTS
+  for file/dir; openat2 RESOLVE_BENEATH|NO_SYMLINKS|NO_MAGICLINKS|NO_XDEV from the
+  mount-root O_PATH fd. Used only when the scanner's own open hits EACCES.
 
 ## Rules
 - Never accept /dev paths. Partition handles are broker-issued (`partN`);

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from src.broker import sysfs
+from src.broker import mounts, sysfs
 from src.broker.audit import AuditLog
 from src.broker.context import BrokerContext
 from src.broker.sysenv import CommandResult, SysEnv
@@ -123,6 +123,9 @@ def host(tmp_path):
 def ctx(host, tmp_path, monkeypatch):
     # Device nodes cannot be created without CAP_MKNOD; node validation is tested separately.
     monkeypatch.setattr(sysfs, "verify_device_node", lambda env, block: f"/dev/{block.name}")
+    # Simulated mounts are plain directories: skip the st_dev check (covered by integration tests).
+    monkeypatch.setattr(mounts, "open_mount_root",
+                        lambda target, major, minor, fuse=False: os.open(target, os.O_PATH | os.O_DIRECTORY))
     audit = AuditLog(str(tmp_path / "audit.log"))
     c = BrokerContext(env=host.env(), audit=audit, mounts_dir=str(tmp_path / "mounts"),
                       read_gid=os.getgid())

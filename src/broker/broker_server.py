@@ -20,6 +20,7 @@ from src.shared import broker_protocol as bp
 from src.shared.ipc import IPCError, PeerCredentials, remove_stale_socket, peer_credentials
 
 from .commands import COMMANDS
+from .commands.open import FDS_KEY
 from .context import BrokerContext
 
 log = logging.getLogger(__name__)
@@ -71,32 +72,68 @@ class BrokerServer:
         with contextlib.suppress(OSError, IPCError):
             remove_stale_socket(self.socket_path)
 
-    async def dispatch(self, line: bytes, peer: PeerCredentials) -> bytes:
+    async def dispatch(self, line: bytes, peer: PeerCredentials) -> tuple[bytes, list[int]]:
         try:
             nonce, cmd, args = bp.verify_request(self._key, line, self._nonces)
         except bp.ProtocolError as exc:
             nonce = exc.detail if len(exc.detail) == 32 else _NULL_NONCE
             log.warning("broker: rejected request from pid=%d: %s", peer.pid, exc.code)
             self.ctx.audit.write("rejected_request", peer_pid=peer.pid, peer_uid=peer.uid, error=exc.code)
-            return bp.build_response(self._key, nonce, error=exc.code)
+            return bp.build_response(self._key, nonce, error=exc.code), []
 
         handler = COMMANDS.get(cmd)
         if handler is None:
             self.ctx.audit.write("rejected_request", peer_pid=peer.pid, error=bp.E_UNKNOWN_COMMAND)
-            return bp.build_response(self._key, nonce, error=bp.E_UNKNOWN_COMMAND)
+            return bp.build_response(self._key, nonce, error=bp.E_UNKNOWN_COMMAND), []
         try:
             async with self._lock:
                 result: dict[str, Any] = await asyncio.wait_for(handler(self.ctx, args), self._timeout)
         except bp.ProtocolError as exc:
             self.ctx.audit.write("command_failed", command=cmd, peer_pid=peer.pid, error=exc.code)
-            return bp.build_response(self._key, nonce, error=exc.code, detail=exc.detail)
+            return bp.build_response(self._key, nonce, error=exc.code, detail=exc.detail), []
         except asyncio.TimeoutError:
             self.ctx.audit.write("command_timeout", command=cmd, peer_pid=peer.pid)
-            return bp.build_response(self._key, nonce, error=bp.E_INTERNAL, detail="command timed out")
+            return bp.build_response(self._key, nonce, error=bp.E_INTERNAL, detail="command timed out"), []
         except Exception:  # never leak internals to the client
             log.exception("broker: command %s failed", cmd)
-            return bp.build_response(self._key, nonce, error=bp.E_INTERNAL)
-        return bp.build_response(self._key, nonce, result=result)
+            return bp.build_response(self._key, nonce, error=bp.E_INTERNAL), []
+        fds = result.pop(FDS_KEY, [])
+        try:
+            return bp.build_response(self._key, nonce, result=result), fds
+        except Exception:
+            for fd in fds:
+                os.close(fd)
+            raise
+
+    @staticmethod
+    async def _send(writer: asyncio.StreamWriter, line: bytes, fds: list[int]) -> None:
+        """Write a reply; with fds, send the first bytes via sendmsg/SCM_RIGHTS on a dup of
+        the transport socket (asyncio streams cannot carry ancillary data)."""
+        if not fds:
+            writer.write(line)
+            await writer.drain()
+            return
+        try:
+            await writer.drain()
+            # Closing the dup never affects the transport's own descriptor.
+            raw = socket.socket(fileno=os.dup(writer.get_extra_info("socket").fileno()))
+            try:
+                for _ in range(200):
+                    try:
+                        sent = socket.send_fds(raw, [line], fds)
+                        break
+                    except BlockingIOError:
+                        await asyncio.sleep(0.005)
+                else:
+                    raise ConnectionError("peer not reading")
+            finally:
+                raw.close()
+            if sent < len(line):
+                writer.write(line[sent:])
+                await writer.drain()
+        finally:
+            for fd in fds:
+                os.close(fd)
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -117,7 +154,7 @@ class BrokerServer:
                     break
                 if not line:
                     break
-                writer.write(await self.dispatch(line, peer))
-                await writer.drain()
+                reply, fds = await self.dispatch(line, peer)
+                await self._send(writer, reply, fds)
         finally:
             writer.close()

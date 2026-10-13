@@ -149,7 +149,8 @@ def test_suspicious_and_policy_severity():
 
 def test_mandatory_engines():
     cfg = load_config_from_dict({"virustotal": {"enabled": True, "role": "mandatory",
-                                                "api_key_ref": "env:VT", "on_quota_or_network_failure": "incomplete"}})
+                                                "api_key_ref": "env:VT", "on_quota_or_network_failure": "incomplete",
+                                                "network_outage_policy_ref": "SEC-POL-17"}})
     f = facts(vt_complete=False)
     assert evaluate(f, cfg) == (Verdict.INCOMPLETE, ["virustotal_incomplete"])
     advisory = load_config_from_dict({"virustotal": {"enabled": True, "api_key_ref": "env:VT"}})

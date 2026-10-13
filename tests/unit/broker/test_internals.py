@@ -141,3 +141,9 @@ def test_drop_capabilities_in_child_process():
     child = dict(line.split(":\t") for line in data["child"].strip().splitlines())
     assert int(child["CapBnd"], 16) == expected
     assert int(child["CapEff"], 16) & ~expected == 0
+
+
+def test_classify_reports_partition_type():
+    r = probe.classify(probe.parse_export("PART_ENTRY_TYPE=E3C9E316-0B5C-4DB8-817D-F92DF00215AE\nPART_ENTRY_NUMBER=1\n"))
+    assert r.status is probe.VolumeStatus.UNRECOGNIZED
+    assert r.part_type == "e3c9e316-0b5c-4db8-817d-f92df00215ae"

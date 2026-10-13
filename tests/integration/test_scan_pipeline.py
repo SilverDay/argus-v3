@@ -44,15 +44,26 @@ import asyncio, json, sys
 from src.orchestrator.scan_session import ScanSession
 from src.orchestrator.scanner_clamav import ClamdClient
 from src.shared.config import load_config_from_dict
+from src.orchestrator.broker_client import BrokerClient
 from tests.unit.orchestrator.fakes import FakeBroker
 
-mount_path, clamd_sock = sys.argv[1], sys.argv[2]
+mount_path, clamd_sock, broker_sock, key_hex = sys.argv[1:5]
 cfg = load_config_from_dict({"clamav": {"socket_path": clamd_sock}})
+
+
+class HybridBroker(FakeBroker):
+    # enumerate/mount are simulated (no USB sysfs in CI); confined opens go to the real broker.
+    def __init__(self):
+        super().__init__({"part1": mount_path})
+        self.real = BrokerClient(broker_sock, bytes.fromhex(key_hex))
+
+    def open_path(self, session_id, partition_id, rel):
+        return self.real.open_path(session_id, partition_id, rel)
 
 async def main():
     async def publish(ev):
         pass
-    s = ScanSession(cfg, FakeBroker({"part1": mount_path}), ClamdClient(clamd_sock), publish,
+    s = ScanSession(cfg, HybridBroker(), ClamdClient(clamd_sock), publish,
                     scan_id="s", session_id="0f8fad5b-d9cb-469f-a165-70867728950e",
                     sysfs_path="/sys/bus/usb/devices/1-1")
     await s.validate()
@@ -92,13 +103,66 @@ def clamd():
     shutil.rmtree(base, ignore_errors=True)
 
 
+class BrokerHarness:
+    """Real BrokerServer in a background thread, serving one injected session to uid nobody."""
+
+    SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+    def __init__(self):
+        self.key = os.urandom(32)
+        self.socket_path = None
+        self._thread = None
+        self._loop = None
+
+    def start(self, target, major, minor, base):
+        import threading
+        from src.broker.audit import AuditLog
+        from src.broker.broker_server import BrokerServer
+        from src.broker.context import BrokerContext
+        from src.broker.session import Session
+        from src.broker.sysfs import UsbDevice
+
+        self.socket_path = os.path.join(base, "broker.sock")
+        self.audit = AuditLog(os.path.join(base, "audit.log"))
+        ctx = BrokerContext(env=SysEnv(), audit=self.audit, mounts_dir=base, read_gid=NOGROUP)
+        session = Session(self.SESSION, UsbDevice("1-1", "/x", 1, 1, "", "", ""))
+        session.root_fds["part1"] = mounts.open_mount_root(target, major, minor)
+        ctx.sessions.open(session)
+        self.session = session
+        self._loop = asyncio.new_event_loop()
+        server = BrokerServer(ctx, socket_path=self.socket_path, hmac_key=self.key,
+                              client_uid=NOBODY, socket_gid=NOGROUP)
+        self._loop.run_until_complete(server.start())
+        self.server = server
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self.server.close(), self._loop).result(10)
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(10)
+        self._loop.close()
+        self.session.close_root_fds()   # must precede unmount
+        self.audit.close()
+        self._loop = None
+
+
 @pytest.fixture
-def volume(tmp_path):
+def broker_harness():
+    h = BrokerHarness()
+    yield h
+    h.stop()
+
+
+@pytest.fixture
+def volume(tmp_path, broker_harness):
     """Build a vfat or ext4 image from a file spec, mount it read-only, yield the mount path."""
     created = []
 
     def build(files: dict[str, bytes], modes: dict[str, int] | None = None, fs: str = DEFAULT_FS,
-              keep_lost_found: bool = False) -> str:
+              dir_modes: dict[str, int] | None = None) -> str:
         src = tmp_path / "content"
         src.mkdir()
         for name, data in files.items():
@@ -109,6 +173,8 @@ def volume(tmp_path):
         # Typical removable media: world-readable directories (pytest tmp dirs are 0700).
         for d in [src, *(p for p in src.rglob("*") if p.is_dir())]:
             d.chmod(0o755)
+        for name, mode in (dir_modes or {}).items():
+            (src / name).chmod(mode)
         img = tmp_path / "usb.img"
         subprocess.run(["truncate", "-s", "32M", str(img)], check=True)
         if fs == "vfat":
@@ -118,10 +184,6 @@ def volume(tmp_path):
                 subprocess.run(["mcopy", "-s", "-i", str(img), *entries, "::/"], check=True)
         else:
             subprocess.run(["mkfs.ext4", "-q", "-F", "-d", str(src), str(img)], check=True)
-            if not keep_lost_found:
-                # lost+found is 0700 root and unlistable by the scanner (see limitation test).
-                subprocess.run(["debugfs", "-w", "-R", "rmdir lost+found", str(img)],
-                               check=True, capture_output=True)
         dev = subprocess.run(["losetup", "-f", "--show", str(img)], check=True,
                              capture_output=True, text=True).stdout.strip()
         # pytest's tmp root is 0700; mount below a 0755 base like /run/usb-scan/mounts.
@@ -138,25 +200,29 @@ def volume(tmp_path):
             await mounts.mount_readonly(env, dev, os.major(st.st_rdev), os.minor(st.st_rdev), fs, target, NOGROUP)
 
         asyncio.run(do_mount())
+        broker_harness.start(target, os.major(st.st_rdev), os.minor(st.st_rdev), base)
         return target
 
     yield build
+    broker_harness.stop()
     for env, target, dev, base in created:
         asyncio.run(mounts.unmount(env, target))
         subprocess.run(["losetup", "-d", dev], check=False)
         shutil.rmtree(base, ignore_errors=True)
 
 
-def scan_as_nobody(mount_path: str, clamd_sock: str) -> dict:
-    out = subprocess.run([sys.executable, "-c", SCAN_SCRIPT, mount_path, clamd_sock], cwd=ROOT,
+def scan_as_nobody(mount_path: str, clamd_sock: str, broker: "BrokerHarness", broker_up: bool = True) -> dict:
+    sock = broker.socket_path if broker_up else "/nonexistent/broker.sock"
+    out = subprocess.run([sys.executable, "-c", SCAN_SCRIPT, mount_path, clamd_sock, sock, broker.key.hex()],
+                         cwd=ROOT,
                          user=NOBODY, group=NOGROUP, extra_groups=[], capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
 
-def test_clean_volume(clamd, volume):
+def test_clean_volume(clamd, volume, broker_harness):
     path = volume({"docs/report.txt": b"quarterly numbers\n", "hello.txt": b"hello\n"})
-    r = scan_as_nobody(path, clamd)
+    r = scan_as_nobody(path, clamd, broker_harness)
     assert r["verdict"] == "CLEAN", json.dumps({k: r[k] for k in ("coverage", "engine_errors", "reason_codes")})
     cov = r["coverage"]
     assert cov["clamav_complete"] is True
@@ -164,9 +230,9 @@ def test_clean_volume(clamd, volume):
     assert cov["bytes_read"] == cov["bytes_enumerated"] == len(b"quarterly numbers\n") + len(b"hello\n")
 
 
-def test_eicar_is_threat(clamd, volume):
+def test_eicar_is_threat(clamd, volume, broker_harness):
     path = volume({"clean.txt": b"fine\n", "sub/eicar.com": EICAR})
-    r = scan_as_nobody(path, clamd)
+    r = scan_as_nobody(path, clamd, broker_harness)
     assert r["verdict"] == "THREAT", r
     (t,) = r["threats"]
     assert t["engine"] == "clamav" and t["signature_name"] == "Test.EICAR.UNOFFICIAL"
@@ -174,38 +240,52 @@ def test_eicar_is_threat(clamd, volume):
     assert r["coverage"]["files_scanned"] == 2 and r["coverage"]["clamav_complete"] is True
 
 
-def test_unreadable_file_is_incomplete(clamd, volume):
+def test_ext4_restricted_content_scanned_via_broker(clamd, volume, broker_harness):
+    """Content hidden by on-media permissions (0700 root dir, 0600 files, lost+found) is
+    opened by the broker's confined openat2 and still scanned by the unprivileged scanner."""
+    path = volume({"top.txt": b"top\n", "private/eicar.com": EICAR, "private/notes.txt": b"n\n"},
+                  modes={"private/eicar.com": 0o600, "private/notes.txt": 0o000},
+                  dir_modes={"private": 0o700}, fs="ext4")
+    r = scan_as_nobody(path, clamd, broker_harness)
+    assert r["verdict"] == "THREAT", r
+    cov = r["coverage"]
+    assert cov["files_scanned"] == 3 and cov["files_uninspectable"] == 0 and cov["skip_reasons"] == {}
+    (t,) = r["threats"]
+    assert t["file_path"] == "part1/private/eicar.com" and t["sha256"] == hashlib.sha256(EICAR).hexdigest()
+    assert any(n.startswith("part1:privileged_opens=") for n in r["reason_codes"])
+
+
+def test_ext4_with_lost_and_found_can_be_clean(clamd, volume, broker_harness):
+    path = volume({"hello.txt": b"hello\n"}, fs="ext4")
+    r = scan_as_nobody(path, clamd, broker_harness)
+    assert r["verdict"] == "CLEAN", r
+    assert r["coverage"]["clamav_complete"] is True
+
+
+def test_unreadable_when_broker_unavailable_is_incomplete(clamd, volume, broker_harness):
+    """Fail-closed: if hidden content cannot be opened at all, the verdict is INCOMPLETE."""
     path = volume({"ok.txt": b"ok\n", "secret.txt": b"locked\n"}, modes={"secret.txt": 0o000}, fs="ext4")
-    r = scan_as_nobody(path, clamd)
+    r = scan_as_nobody(path, clamd, broker_harness, broker_up=False)
     assert r["verdict"] == "INCOMPLETE", r
     assert r["coverage"]["files_scanned"] == 1
-    assert r["coverage"]["files_uninspectable"] == 1
-    assert r["coverage"]["skip_reasons"] == {"unreadable": 1}
+    # secret.txt plus ext4's lost+found (0700 root) cannot be inspected without the broker.
+    assert r["coverage"]["skip_reasons"] == {"unreadable": 2}
     assert r["coverage"]["clamav_complete"] is False
 
 
-def test_ext4_lost_and_found_limitation(clamd, volume):
-    """Known limitation (pending decision): an unprivileged scanner cannot list ext4's
-    0700 root-owned lost+found, so every ext4 volume is INCOMPLETE (fail-closed)."""
-    path = volume({"hello.txt": b"hello\n"}, fs="ext4", keep_lost_found=True)
-    r = scan_as_nobody(path, clamd)
-    assert r["verdict"] == "INCOMPLETE"
-    assert r["coverage"]["files_scanned"] == 1 and r["coverage"]["skip_reasons"] == {"unreadable": 1}
-
-
-def test_encrypted_archive_is_incomplete(clamd, volume, tmp_path):
+def test_encrypted_archive_is_incomplete(clamd, volume, tmp_path, broker_harness):
     enc = tmp_path / "enc.zip"
     subprocess.run(["zip", "-q", "-P", "pw", str(enc), "/etc/hostname"], check=True)
     path = volume({"enc.zip": enc.read_bytes()})
-    r = scan_as_nobody(path, clamd)
+    r = scan_as_nobody(path, clamd, broker_harness)
     assert r["verdict"] == "INCOMPLETE" and r["coverage"]["skip_reasons"] == {"encrypted": 1}, r
 
 
-def test_archive_limit_is_incomplete(clamd, volume, tmp_path):
+def test_archive_limit_is_incomplete(clamd, volume, tmp_path, broker_harness):
     many = tmp_path / "many.zip"
     with zipfile.ZipFile(many, "w") as z:
         for i in range(100):
             z.writestr(f"f{i}.txt", f"{i}")
     path = volume({"many.zip": many.read_bytes()})
-    r = scan_as_nobody(path, clamd)
+    r = scan_as_nobody(path, clamd, broker_harness)
     assert r["verdict"] == "INCOMPLETE" and r["coverage"]["skip_reasons"] == {"scan_limit": 1}, r

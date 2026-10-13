@@ -8,6 +8,9 @@ mount/eject are not idempotent.
 from __future__ import annotations
 
 import asyncio
+import base64
+import os
+import socket
 from typing import Any
 
 from src.shared import broker_protocol as bp
@@ -85,3 +88,44 @@ class BrokerClient:
 
     async def release(self, session_id: str) -> None:
         await self.call("release", session_id=session_id)
+
+    def open_path(self, session_id: str, partition_id: str, rel: bytes) -> tuple[str, int | None, int]:
+        """Confined open of ``rel`` inside a mounted volume (blocking; call from a thread).
+
+        Returns (kind, fd or None, size). kind: file | dir | symlink | special | missing | denied.
+        The caller owns the returned fd.
+        """
+        line, nonce = bp.build_request(self._key, "open", {
+            "session_id": session_id, "partition_id": partition_id,
+            "path_b64": base64.b64encode(rel).decode("ascii")})
+        fds: list[int] = []
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC) as sock:
+                sock.settimeout(self._timeout)
+                try:
+                    sock.connect(self.socket_path)
+                    sock.sendall(line)
+                    buf = b""
+                    while not buf.endswith(b"\n"):
+                        data, got, _flags, _addr = socket.recv_fds(sock, bp.MAX_MESSAGE_BYTES, 4)
+                        fds.extend(got)
+                        if not data:
+                            break
+                        buf += data
+                        if len(buf) > bp.MAX_MESSAGE_BYTES:
+                            raise BrokerUnavailable("reply too large")
+                except OSError as exc:
+                    raise BrokerUnavailable(str(exc)) from None
+            try:
+                result = bp.parse_response(self._key, buf, nonce)
+            except bp.ProtocolError as exc:
+                raise BrokerError(exc.code, exc.detail) from None
+            kind = result.get("type")
+            expect_fd = kind in ("file", "dir")
+            if not isinstance(kind, str) or len(fds) != (1 if expect_fd else 0):
+                raise BrokerError("bad_request", "unexpected open reply")
+            fd = fds.pop() if expect_fd else None
+            return kind, fd, int(result.get("size", 0))
+        finally:
+            for extra in fds:
+                os.close(extra)

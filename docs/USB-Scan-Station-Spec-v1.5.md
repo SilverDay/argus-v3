@@ -1,8 +1,8 @@
 # USB Scan Station — Software Specification
 
-**Version:** 1.5 DRAFT  
+**Version:** 1.5.1 DRAFT  
 **Date:** 13 October 2026  
-**Baseline:** v1.4 DRAFT (13 October 2026)  
+**Baseline:** v1.5 DRAFT (13 October 2026)  
 **Target hardware:** Raspberry Pi 5 (8 GB RAM), High-Endurance/Industrial microSD, Pi 5 Active Cooler  
 **Target OS:** Raspberry Pi OS Lite 64-bit (Debian 13 / Trixie), OverlayFS read-only root  
 **Classification:** Internal / Confidential  
@@ -103,7 +103,7 @@ Raspberry Pi 5, standard office enclosure, 5-inch touchscreen, one externally ac
 - FR-USB-01: Detect a newly inserted candidate storage device within a **target of 2 seconds**, subject to validated hardware and OS behavior.
 - FR-USB-02: Do not accept HID devices or automatically trust USB hubs. Composite devices with unapproved interfaces SHALL be rejected or placed into an explicit restricted policy state; ignoring input in the GUI alone is insufficient.
 - FR-USB-03: Evaluate USB class/subclass/protocol and topology with an auditable authorization policy (USBGuard or equivalent); maintain separate handling for storage descriptors and USB interface changes.
-- FR-USB-04: Inspect **every exposed block device and partition**; either scan supported readable partitions or record each excluded/unsupported partition and mark coverage incomplete unless an explicit, authorized deployment policy declares it outside scope.
+- FR-USB-04: Inspect **every exposed block device and partition**; either scan supported readable partitions or record each excluded/unsupported partition and mark coverage incomplete unless an explicit, authorized deployment policy declares it outside scope. The only such policy is `device.excludable_partition_types` (GPT type GUIDs / MBR type IDs, default empty): it applies solely to partitions with **no** filesystem or other signature and no larger than `device.excludable_partition_max_mb`; such partitions are counted as `partitions_out_of_scope` and named in the scan record, never silently dropped.
 - FR-USB-05: Supported read-only filesystem targets: FAT32, exFAT, NTFS, ext2/3/4 and ISO 9660. Unsupported, encrypted, damaged or unreadable volumes are classified as uninspected, never implicitly clean. Mount support depends on validated kernel/userspace implementations. For NTFS and exFAT specifically: validate which kernel driver is active (kernel `ntfs3` vs `ntfs-3g` for NTFS; kernel `exfat` module vs `exfat-fuse` for exFAT) on the target Trixie kernel and confirm safe read-only mount flags for each. The kernel `ntfs3` driver has a security maintenance record that must be reviewed before deployment.
 - FR-USB-06: Limit to one active physical device scan. A second insertion is **rejected by default** and clearly signaled; any queueing feature must bind queued work to stable kernel device identity and handle removal safely.
 - FR-USB-07: Handle removal, interface changes, device renumbering and reinsertion at every stage without confusing files from different devices or resuming a stale session.
@@ -114,10 +114,10 @@ Raspberry Pi 5, standard office enclosure, 5-inch touchscreen, one externally ac
 
 1. **Authorize device** against USB class/interface policy; detect and reject prohibited composite capabilities.
 2. **Identify physical device and partitions** with stable session-scoped UUIDs and metadata, avoiding raw `/dev/` paths.
-3. **Mount each eligible partition** through the privileged device broker in read-only mode (`ro,nodev,nosuid,noexec` plus filesystem-specific safe options). Disable any system automount path. The broker creates a dedicated mount namespace for each scan session scoped to that session's lifetime; scanner processes are explicitly granted read access within that namespace via `ReadOnlyPaths` in their systemd unit configuration. This ensures that namespace cleanup on unmount is deterministic and does not depend on ClamAV's service unit lifecycle.
+3. **Mount each eligible partition** through the privileged device broker in read-only mode (`ro,nodev,nosuid,noexec,nosymfollow` plus filesystem-specific safe options; `noload` for ext3/4). The block device is set read-only (`BLKROSET`) before probing or mounting, because a read-only mount alone does not stop ext3/4 journal replay. Disable any system automount path. Mounts are made in the host mount namespace under `/run/usb-scan/mounts/<session_id>/<partition_id>`, in `0750 root:<scanner read group>` directories; non-scanner services receive `InaccessiblePaths=/run/usb-scan/mounts`. (A broker-private namespace is not used: systemd does not propagate mounts from a unit's namespace to the host, and `ReadOnlyPaths=` changes only take effect on unit restart — systemd.exec(5).) Each mount is verified against the kernel mount table (device number and flags) and removed deterministically on unmount; stale session mounts are removed when the broker starts. Content hidden from the unprivileged scanner by on-media permissions (e.g. ext4 `lost+found`) is opened by the broker read-only via `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV)` relative to the mount root and handed to the scanner as a file descriptor.
 4. **Discover inventory** (files/dirs, symbolic links, byte totals, metadata failures). Bound traversal, reject escapes from the mount root and record reasons for exclusion. Do not follow symlinks outside the scan root.
-5. **Perform mandatory ClamAV inspection** over all in-scope discoverable files within specified resource limits; collect per-file outcomes including `scanned`, `detected`, `skipped`, `failed`, `timeout`, `encrypted` and `unsupported`.
-6. **Run YARA** if enabled and required by site policy. Compile and validate the activated ruleset in advance; apply resource/time limits and record the result per file. The YARA worker receives read access to files via the shared read-only namespace puncture described in step 3; it does not receive raw file paths or file descriptors from the orchestrator directly. Per-file timeouts are enforced inside the YARA worker process using YARA's native timeout API; the orchestrator additionally monitors total YARA worker time via a watchdog and sends `SIGKILL` if the worker exceeds its global budget, recording the event as INCOMPLETE.
+5. **Perform mandatory ClamAV inspection** over all in-scope discoverable files within specified resource limits, passing each opened file to clamd as a file descriptor (`FILDES`) so that clamd itself needs no access to USB mounts; clamd must report limit hits and encrypted content (`AlertExceedsMax`, `AlertEncrypted`), which count as uninspected; collect per-file outcomes including `scanned`, `detected`, `skipped`, `failed`, `timeout`, `encrypted` and `unsupported`.
+6. **Run YARA** if enabled and required by site policy. Compile and validate the activated ruleset in advance; apply resource/time limits and record the result per file. The YARA worker receives read access to files via the scanner read group on the session mount directories described in step 3 (and, for content hidden by on-media permissions, via broker-opened file descriptors). Per-file timeouts are enforced inside the YARA worker process using YARA's native timeout API; the orchestrator additionally monitors total YARA worker time via a watchdog and sends `SIGKILL` if the worker exceeds its global budget, recording the event as INCOMPLETE.
 7. **Perform VirusTotal SHA-256 reputation queries** if enabled, respecting cache age, quota, privacy and policy. No file-content upload. Hash-only lookups must not be restricted by arbitrary file-upload-size thresholds; hashing large files can have a separately configured CPU/IO budget (config key: `virustotal.large_file_hash_budget_mb`).
 8. **Evaluate detections and completeness** across every partition, file and **required** engine. Policy blocks can produce THREAT or SUSPICIOUS but cannot transform missing inspection into CLEAN. If the orchestrator's global timeout is reached before individual engine timeouts, the system must gracefully terminate engine processes and record an INCOMPLETE verdict.
 9. **Optionally retain evidence** to isolated quarantine using a controlled copy path if triggered by a THREAT or configured policy violation, provided storage and policy allow it; quarantine failure is recorded independently of the detection verdict.
@@ -255,10 +255,10 @@ Persistent paths mapped to the data partition include: `/var/lib/usb-scan/` (dat
 
 | Service | User/privileges | Interface |
 |---|---|---|
-| `usb-scan-device-broker.service` | Restricted privileged custom service (root). Bypasses `udisks2` entirely to eliminate D-Bus attack surface. | Root-owned authenticated local Unix socket; strict allowlisted JSON/RPC commands. |
+| `usb-scan-device-broker.service` | Restricted privileged custom service (root; only `CAP_SYS_ADMIN` and `CAP_CHOWN` retained after start, `no_new_privs`). Bypasses `udisks2` entirely to eliminate D-Bus attack surface. Must not use namespace-creating sandboxing options. | `0660 root:usbscan` Unix socket; peer uid check plus per-message HMAC with replay protection; strict allowlisted JSON/RPC commands. |
 | `usb-scan-orchestrator.service` | `usbscan`, unprivileged, no shell execution | Broker RPC; events; clamd socket |
-| `clamav-daemon.service` | `clamav` user. Enforces `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateDevices=yes`, and `NoNewPrivileges=true`. | Clamd Unix socket; `ReadOnlyPaths=/run/usb-scan/mounts/` grants access to active session mount point. |
-| `usb-scan-yara.service` (optional) | Isolated `yarascan` user | Shared read-only mount namespace access; CPU/memory/time budgets enforced via cgroups and internal YARA timeout API; orchestrator watchdog kills on global budget expiry. |
+| `clamav-daemon.service` | `clamav` user. Enforces `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateDevices=yes`, and `NoNewPrivileges=true`; `InaccessiblePaths=/run/usb-scan/mounts`. | Clamd Unix socket; files are received as descriptors (`FILDES`), no mount access needed. |
+| `usb-scan-yara.service` (optional) | Isolated `yarascan` user | Read access to session mounts via the scanner read group; CPU/memory/time budgets enforced via cgroups and internal YARA timeout API; orchestrator watchdog kills on global budget expiry. |
 | `usb-scan-gui.service` | `usbscan-gui`, no device rights | Read-only state/event socket; restricted operator RPC |
 | `usb-scan-led.service` | Restricted GPIO identity | State events; GPIO only |
 | `usb-scan-admin.service` | `usbscan-web`, no direct device/mount/secret reads | Authenticated management API |
@@ -272,11 +272,11 @@ Persistent paths mapped to the data partition include: `/var/lib/usb-scan/` (dat
 
 ### 6.1 Principles
 
-`/etc/usb-scan/scan_station.yaml` contains **no plaintext secrets or credential hashes**. Secret fields are references to root-controlled files, systemd credentials or a protected key store. Config must pass a typed schema with defaults, enum validation, size/time bounds and cross-field rules before activation.
+`/etc/usb-scan/scan_station.yaml` contains **no plaintext secrets or credential hashes**. Secret fields are references to root-controlled files, systemd credentials or a protected key store. Environment-variable secrets are permitted only in development mode (`USB_SCAN_DEV=1`), because environment variables are readable by same-user processes. Config must pass a typed schema with defaults, enum validation, size/time bounds and cross-field rules before activation.
 
 ### 6.2 Validation Rules
 
-- `virustotal.role=mandatory` requires `enabled=true`, nonempty credential, a documented network-outage policy, and `on_quota_or_network_failure` strictly set to `incomplete` or `error`.
+- `virustotal.role=mandatory` requires `enabled=true`, nonempty credential, a documented network-outage policy referenced in `virustotal.network_outage_policy_ref`, and `on_quota_or_network_failure` strictly set to `incomplete` or `error`.
 - `yara.role=mandatory` requires a valid signed, compiled ruleset, otherwise station is NOT_READY.
 - `auth.web.require_mfa=true` is mandatory for OIDC.
 - Non-empty `allow_extensions` constitutes a restricted policy scope and requires prominent report/UI disclosure.
@@ -350,7 +350,7 @@ Each station is individually enrolled using a unique mTLS certificate issued dur
 
 ### 10.1 Local Operator PIN
 
-A minimum six-digit numeric PIN (no factory default) unlocks the restricted touchscreen operator overlay. Reject repeated/sequential PINs and PINs on configured deny lists. The on-screen keypad **must randomize digit positions on each presentation** to mitigate shoulder-surfing in public-facing locations. Store the hash using bcrypt at cost factor 12 or higher in a protected secrets store outside the general config YAML. Rate-limit independently of hash computation cost. Retain lockout state robustly across GUI restarts (lockout state is persisted to the event database, not held in process memory). Default: five failed attempts followed by 15-minute lockout.
+A minimum six-digit numeric PIN (no factory default) unlocks the restricted touchscreen operator overlay. Reject repeated/sequential PINs and PINs on configured deny lists. The on-screen keypad **must randomize digit positions on each presentation** to mitigate shoulder-surfing in public-facing locations. Store the hash using bcrypt at cost factor 12 or higher in a protected secrets store outside the general config YAML. Rate-limit independently of hash computation cost. Retain lockout state robustly across GUI restarts (lockout state is persisted to the event database, not held in process memory). Default: five failed attempts followed by 15-minute lockout. Within one boot, lockout expiry is measured on the monotonic boot clock, so wall-clock changes neither shorten nor extend it; if after a reboot the wall clock is behind the lockout record, the lockout is re-armed once (fail closed, extended by at most one lockout period).
 
 ### 10.2 Named Remote Administrator Authentication
 
@@ -444,7 +444,8 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | 1.2 DRAFT | October 2026 | Reworked scan semantics/coverage, USB trust boundary, privileged device broker, state machine/ejection, admin authentication. |
 | 1.3 DRAFT | 13 October 2026 (superseded same day) | Addressed architectural contradictions regarding quarantine release workflows; unified terminology around local Operator constraints vs. remote Admins. Superseded by v1.4 before distribution. |
 | 1.4 DRAFT | 13 October 2026 | Resolved Hardware BOM (office configuration, 27W PSU, Active cooler); standardized on High-Endurance microSD with OverlayFS script architecture (A/B updates abandoned); locked USBGuard class enforcement and hardened scanner namespace access. |
-| **1.5 DRAFT** | **13 October 2026** | Final review findings applied: stripped review annotations; resolved §9.2/§15.2 mTLS contradiction; added missing acceptance criteria (NOT_READY, USBGuard policy-layer rejection, coverage metrics, REJECTED, PIN lockout persistence, synthetic fixture); added randomized PIN keypad requirement; specified YARA file delivery and kill-on-timeout behavior; defined `operator_hold` semantics; added update-window power-loss risk; added MTTR/watchdog NFR; clarified bcrypt vs Argon2id scope; added NTFS/exFAT driver validation note; clarified mount namespace model; added Wi-Fi policy scope note; disambiguated v1.3/v1.4 same-day revision. |
+| 1.5 DRAFT | 13 October 2026 | Final review findings applied: stripped review annotations; resolved §9.2/§15.2 mTLS contradiction; added missing acceptance criteria (NOT_READY, USBGuard policy-layer rejection, coverage metrics, REJECTED, PIN lockout persistence, synthetic fixture); added randomized PIN keypad requirement; specified YARA file delivery and kill-on-timeout behavior; defined `operator_hold` semantics; added update-window power-loss risk; added MTTR/watchdog NFR; clarified bcrypt vs Argon2id scope; added NTFS/exFAT driver validation note; clarified mount namespace model; added Wi-Fi policy scope note; disambiguated v1.3/v1.4 same-day revision. |
+| **1.5.1 DRAFT** | **13 October 2026** | Implementation-driven owner decisions: host-namespace mount model with BLKROSET, verified mounts and broker-confined `openat2` opens (replaces per-session namespace + `ReadOnlyPaths` drop-in, §3.2/§5.4); ClamAV via `FILDES` with mandatory limit/encryption alerts; explicit partition-type exclusion policy (FR-USB-04); `network_outage_policy_ref` for mandatory VirusTotal; environment secrets development-only; lockout clock-jump handling (§10.1); blocked-extension default severity SUSPICIOUS (§15.2 #6). |
 
 ### 15.2 Implementation Decisions Still Requiring Prototype or Owner Approval
 
@@ -453,7 +454,7 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 3. **Privacy and retention:** approve path/serial pseudonymization, VT hash-sharing, quarantine operation and regional retention obligations.
 4. **Cloud mandatory mode:** decide whether VT is advisory-only in production or a conditional mandatory stage; specify clear offline behavior.
 5. **Secret recovery:** design secure deployment, backup and key restoration compatible with unattended boots and the chosen threat model.
-6. **Threat/policy definitions:** decide default severity for prohibited extensions and whether any explicit extension-scoped CLEAN result is acceptable for managed OT workflows.
+6. **Threat/policy definitions:** *Resolved for the default:* prohibited extensions are policy violations with default severity SUSPICIOUS (`scan.blocked_extension_severity`, configurable to THREAT). Still open: whether any explicit extension-scoped CLEAN result is acceptable for managed OT workflows.
 
 ### 15.3 Release Gate
 

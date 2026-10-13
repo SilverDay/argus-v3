@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..context import BrokerContext
-from . import eject, enumerate, mount, ping, unmount
+from . import eject, enumerate, mount, open, ping, unmount
 
 Handler = Callable[[BrokerContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -16,4 +16,5 @@ COMMANDS: dict[str, Handler] = {
     "unmount": unmount.handle,
     "release": unmount.handle_release,
     "eject": eject.handle,
+    "open": open.handle,
 }

@@ -4,7 +4,7 @@
 # NO credential hashes. Secret fields hold references only:
 #   file:/abs/path        root-controlled file (not accessible by "other")
 #   credential:<name>     systemd credential ($CREDENTIALS_DIRECTORY/<name>)
-#   env:<NAME>            environment variable (least preferred)
+#   env:<NAME>            environment variable — development only (needs USB_SCAN_DEV=1)
 # Unknown keys are rejected; omitted keys take the defaults in src/shared/config.py.
 
 schema_version: 1
@@ -20,6 +20,11 @@ device:
   internal_device_sysfs_prefixes: []    # FR-USB-08: never offered for scanning
   require_full_coverage: true           # uninspected partition -> INCOMPLETE
   insertion_debounce_ms: 500
+  # FR-USB-04 explicit policy: partitions with NO filesystem signature and one of these
+  # partition types are reported as out of scope instead of making the scan INCOMPLETE.
+  # Example (GPT Microsoft Reserved Partition): e3c9e316-0b5c-4db8-817d-f92df00215ae
+  excludable_partition_types: []
+  excludable_partition_max_mb: 128
 
 broker:
   socket_path: /run/usb-scan/broker.sock   # 0660 root:usbscan (connect needs group write)
@@ -78,6 +83,7 @@ virustotal:
   role: advisory
   api_key_ref: ""                       # e.g. credential:vt_api_key
   on_quota_or_network_failure: continue # mandatory role requires incomplete | error
+  network_outage_policy_ref: ""         # mandatory role requires a documented outage policy (doc ID/URL)
   cache_ttl_days: 7
   rate_limit_per_minute: 4
   large_file_hash_budget_mb: 4096

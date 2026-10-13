@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 from src.shared.broker_protocol import (
-    E_INVALID_ARGUMENT, E_NOT_FOUND, E_SESSION_CONFLICT, E_UNSUPPORTED, ProtocolError,
+    E_INVALID_ARGUMENT, E_MOUNT_FAILED, E_NOT_FOUND, E_SESSION_CONFLICT, E_UNSUPPORTED, ProtocolError,
 )
 
 from .. import mounts, sysfs
@@ -46,6 +46,12 @@ async def handle(ctx: BrokerContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.audit.write("mount", session_id=session.session_id, partition_id=part.partition_id,
                         result="error", error=exc.code, detail=exc.detail)
         raise
+    try:
+        session.root_fds[part.partition_id] = mounts.open_mount_root(
+            target, part.block.major, part.block.minor, fuse=part.kernel_fs_type == "ntfs-3g")
+    except (OSError, ProtocolError):
+        await mounts.unmount(ctx.env, target)
+        raise ProtocolError(E_MOUNT_FAILED, "mount root verification failed") from None
     session.mounts[part.partition_id] = target
     ctx.audit.write("mount", session_id=session.session_id, partition_id=part.partition_id,
                     fs_type=part.kernel_fs_type, mount_path=target, result="ok")

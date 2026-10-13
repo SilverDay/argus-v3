@@ -60,6 +60,9 @@ def test_vt_mandatory_requires_strict_failure_policy():
     with pytest.raises(ConfigError, match="on_quota_or_network_failure"):
         load_config_from_dict(d)
     d["virustotal"]["on_quota_or_network_failure"] = "incomplete"
+    with pytest.raises(ConfigError, match="network_outage_policy_ref"):
+        load_config_from_dict(d)
+    d["virustotal"]["network_outage_policy_ref"] = "https://intranet.example/policies/vt-outage"
     cfg = load_config_from_dict(d)
     assert cfg.virustotal.on_quota_or_network_failure is FailurePolicy.INCOMPLETE
 
@@ -163,3 +166,23 @@ def test_yaml_tags_are_not_executed(tmp_path):
     p.write_text("station: !!python/object/apply:os.system ['true']\n")
     with pytest.raises(ConfigError, match="YAML"):
         load_config(p)
+
+
+@pytest.mark.parametrize("value,ok", [
+    ("e3c9e316-0b5c-4db8-817d-f92df00215ae", True), ("E3C9E316-0B5C-4DB8-817D-F92DF00215AE", True),
+    ("0x27", True), ("0xc", True), ("27", False), ("0x123", False), ("msr", False),
+])
+def test_excludable_partition_types_validated(value, ok):
+    d = template()
+    d["device"]["excludable_partition_types"] = [value]
+    if ok:
+        load_config_from_dict(d)
+    else:
+        with pytest.raises(ConfigError, match="partition type"):
+            load_config_from_dict(d)
+
+
+def test_normalise_partition_type():
+    from src.shared.config import normalise_partition_type
+    assert normalise_partition_type("0x0C") == "0xc"
+    assert normalise_partition_type("E3C9E316-0B5C-4DB8-817D-F92DF00215AE") == "e3c9e316-0b5c-4db8-817d-f92df00215ae"

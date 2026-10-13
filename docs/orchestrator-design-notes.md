@@ -23,33 +23,36 @@
 8. **Crash recovery.** An `active_scan.json` marker turns a crash/power loss into a
    `scan_interrupted` event with `safe_to_remove=false` and a broker `release` on restart.
 
-## Needs owner decision
+## Owner decisions (13 Oct 2026, spec 1.5.1)
 
-### A. ext2/3/4 media always INCOMPLETE (fail-closed)
-Every ext filesystem has `lost+found` (0700 root). The unprivileged scanner cannot list
-it, so ext media can never be CLEAN; any private directory or file on the media has the
-same effect. FAT/exFAT/NTFS are unaffected (the broker forces group-readable modes).
-Options:
-- (a) accept: ext media are INCOMPLETE by policy (current behaviour);
-- (b) grant the orchestrator `CAP_DAC_READ_SEARCH` — read any file on the host too;
-  must be paired with `InaccessiblePaths=` for secrets/keys in its unit;
-- (c) the broker opens files/directories on the orchestrator's behalf and passes fds
-  (`openat2` with `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`) — strongest isolation, more
-  broker surface and per-file RPC overhead.
+### A. ext media / permission-hidden content — RESOLVED: broker-confined opens
+The orchestrator first opens files itself; on `EACCES` it asks the broker (`open`
+command, see broker-design-notes §7). Verified end to end on a real ext4 loop mount:
+`lost+found`, a 0700 directory and mode-000 files are scanned by the `nobody` scanner;
+EICAR inside them is detected. If the broker cannot open them, the verdict stays
+INCOMPLETE (fail-closed).
 
-### B. Physical removal after logical eject is not observable
-After the broker writes `remove`, the kernel forgets the device; pulling it out
-produces no event. The result stays until the next insertion or
-`orchestrator.result_display_seconds` (default 300 s). Validate on the Pi whether the
-port status (e.g. `usbN-portM` attributes) can detect the physical unplug.
+### B. Physical removal after logical eject — default 300 s kept
+The result stays until the next insertion or `orchestrator.result_display_seconds`
+(default 300 s). Still validate on the Pi whether port status can detect the unplug.
 
-### C. Partitions without a filesystem (e.g. GPT Microsoft Reserved Partition)
-Reported as `unrecognized` → partition excluded → INCOMPLETE under
-`require_full_coverage`. External HDDs formatted by Windows (GPT) usually carry an MSR,
-so they will be INCOMPLETE until a deployment policy explicitly scopes such partition
-types out (FR-USB-04 allows this only "by an explicit, authorized deployment policy").
+### C. Partitions without a filesystem — RESOLVED: explicit allow-list
+`device.excludable_partition_types` (default empty) + `device.excludable_partition_max_mb`
+(default 128). Applies only to partitions with no signature at all (blkid finds nothing)
+of a listed type and within the size cap; counted as `partitions_out_of_scope` and named
+in `reason_codes` (`partition_out_of_scope:<type>`). Encrypted/unsupported/ambivalent
+partitions are never excluded. Partition type comes from libblkid `PART_ENTRY_TYPE`
+(GPT GUID or MBR `0x%x`, per util-linux source).
+
+### Other decisions recorded
+- Blocked extensions: default severity SUSPICIOUS (configurable to THREAT).
+- VirusTotal mandatory: requires `virustotal.network_outage_policy_ref`.
+- Environment-variable secrets: only with `USB_SCAN_DEV=1` (logged warning).
+- PIN lockout clock jumps: boot-clock based within a boot; after a reboot with the wall
+  clock behind the record, re-armed once (≤ one extra lockout period).
 
 ## Still to validate on the Pi
 - vfat/exfat/ntfs3 mounts (this CI kernel only supports ext4).
+- `PART_ENTRY_TYPE` on real partition devices (CI cannot create loop partitions).
 - pyudev event timing for insertion/removal (FR-USB-01 2 s target).
 - FILDES throughput and `clamav.concurrency` on Pi 5 (spec §15.2 #1).

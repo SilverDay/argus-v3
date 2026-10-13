@@ -1,0 +1,57 @@
+# Kiosk GUI (spec §4, §5.4): user usbscan-gui, no device rights beyond display/touch.
+# cage is a Wayland kiosk compositor that runs exactly one maximised application; VT
+# switching stays disabled (no -s). The logind session (PAMName + TTY) grants DRM/input
+# access to this seat; the GUI only reads state.sock.
+
+[Unit]
+Description=USB Scan Station kiosk GUI
+After=systemd-user-sessions.service usb-scan-orchestrator.service plymouth-quit-wait.service
+Wants=usb-scan-orchestrator.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+[Service]
+Type=simple
+User=usbscan-gui
+Group=usbscan-gui
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+Environment=QT_QPA_PLATFORM=wayland
+Environment=XDG_SESSION_TYPE=wayland
+ExecStart=/usr/bin/cage -d -- /opt/usb-scan/.venv/bin/python -m src.gui --config /etc/usb-scan/scan_station.yaml
+WorkingDirectory=/opt/usb-scan
+Restart=always
+RestartSec=3
+
+StateDirectory=usb-scan/gui
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/usb-scan
+InaccessiblePaths=-/run/usb-scan/mounts -/var/lib/usb-scan/quarantine -/etc/usb-scan/secrets
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=graphical.target multi-user.target

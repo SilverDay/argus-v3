@@ -57,6 +57,38 @@ minisign 0.11 exit codes; yara-python 4.5.4 `match(data=…)`, `timeout=` → `T
 real supervisor and children, real clamd, ext4 loop mount, scanner as `nobody`, YARA match
 in a 0700 directory via broker-confined descriptors.
 
+## Ruleset updates (Phase 10, owner decision: offline install AND optional HTTPS pull)
+
+- **Installer:** `python -m src.yara_worker.install` (`BUNDLE.tar.gz`, or `--pull` for
+  `yara.update_url`). It runs as `usbscan-update`, which owns `/var/lib/usb-scan/rules`; the
+  worker only reads it.
+- **Layout:** `rules/versions/<n>/` plus the symlink `rules/active` (= `yara.rules_path`).
+  The signature must be `<rules_path>/manifest.json.minisig`.
+- **Archive handling:** members are read through `extractfile()` only; tarfile never writes to
+  disk. The installer accepts:
+  - regular files only (symlinks, hardlinks and device nodes are refused);
+  - plain names: `manifest.json`, `manifest.json.minisig`, `*.yar`/`*.yara`;
+  - no duplicates;
+  - per-file, total and member-count limits.
+  Hostile archives are covered by tests.
+- **Verification:** files are written with `O_EXCL` into a staging directory and fully
+  verified there with the worker's own `verify_bundle()` (minisign over the manifest bytes,
+  per-file SHA-256, compile with includes disabled). `verify_bundle()` is the same code the
+  worker uses, minus the rollback-state write.
+- **Activation:**
+  - the version must be newer than the active one;
+  - staging is renamed to `versions/<n>`;
+  - `active` is switched with `os.replace` of a fresh symlink (atomic), then the directory is
+    fsync'ed;
+  - the newest `keep_versions` versions are kept.
+- **Worker pickup:** it re-checks the `active` link every 30 s (it cannot be signalled by the
+  updater uid) and reloads, also on SIGHUP. A reload that races the switch can see a mixed
+  bundle; the hash checks reject it and the reload is retried. The worker's persisted
+  rollback guard (`accepted_version`) still applies.
+- **Pull:** https only, TLS verified, no redirects, size cap `max_bundle_mb`. The bundle carries
+  its own signature, so the download location is not trusted. A same-version pull is a no-op
+  (exit 0); an older or invalid bundle fails the unit.
+
 ## To validate on the Pi
 
 * `minisign` package on Trixie (packaged in Ubuntu as 0.11; confirm Debian version).

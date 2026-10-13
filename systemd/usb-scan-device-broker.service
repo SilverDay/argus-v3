@@ -8,6 +8,9 @@
 # filters and the cgroup device policy, none of which create a mount namespace.
 
 [Unit]
+# Spec §11: 3 restarts within 5 minutes -> unit stays failed (crash loop surfaces).
+StartLimitIntervalSec=300
+StartLimitBurst=3
 Description=USB Scan Station device broker
 After=systemd-udevd.service
 Before=usb-scan-orchestrator.service
@@ -22,14 +25,9 @@ WorkingDirectory=/opt/usb-scan
 Restart=always
 RestartSec=3
 WatchdogSec=30
-StartLimitIntervalSec=300
-StartLimitBurst=3
 
-RuntimeDirectory=usb-scan
-RuntimeDirectoryPreserve=yes
-RuntimeDirectoryMode=0755
-LogsDirectory=usb-scan
-LogsDirectoryMode=0750
+# /run/usb-scan and /var/log/usb-scan come from tmpfiles.d (config/system/tmpfiles.d):
+# one owner for directories shared by several services.
 
 # CAP_SETPCAP is needed only for the in-process bounding-set drop at startup;
 # after the socket is bound the process keeps CAP_SYS_ADMIN and CAP_CHOWN only.

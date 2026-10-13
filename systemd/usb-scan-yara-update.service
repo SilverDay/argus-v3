@@ -1,0 +1,40 @@
+# Pull and install a signed YARA ruleset bundle from yara.update_url (owner decision Phase 10).
+# Runs as usbscan-update, which owns /var/lib/usb-scan/rules; the worker (yarascan) only reads
+# it and reloads by itself when the "active" link changes. Signature, hashes, compile and
+# rollback are verified before activation (src/yara_worker/install.py).
+
+[Unit]
+Description=USB Scan Station YARA ruleset update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=usbscan-update
+Group=usbscan-update
+ExecStart=/opt/usb-scan/.venv/bin/python -m src.yara_worker.install --config /etc/usb-scan/scan_station.yaml --pull
+WorkingDirectory=/opt/usb-scan
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadOnlyPaths=/etc/usb-scan
+ReadWritePaths=/var/lib/usb-scan/rules
+InaccessiblePaths=-/run/usb-scan -/var/lib/usb-scan/quarantine -/etc/usb-scan/secrets
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @resources
+UMask=0022
+TimeoutStartSec=15min

@@ -63,10 +63,11 @@ def _read_limited(path: str, limit: int) -> bytes:
     return data
 
 
-def verify_signature(cfg: YaraConfig, manifest: bytes, timeout: float = 30.0) -> None:
+def verify_signature(cfg: YaraConfig, manifest: bytes, timeout: float = 30.0,
+                     signature_path: str | None = None) -> None:
     """Verify ``manifest`` bytes with minisign; raise RulesetError on any failure."""
     try:
-        signature = _read_limited(cfg.ruleset_signature_path, 64 * 1024)
+        signature = _read_limited(signature_path or cfg.ruleset_signature_path, 64 * 1024)
     except OSError as exc:
         raise RulesetError(f"signature unreadable: {exc.strerror}") from None
     with tempfile.TemporaryDirectory(prefix="yara-verify-") as tmp:
@@ -130,22 +131,19 @@ def _store_accepted_version(cfg: YaraConfig, version: int) -> None:
     os.replace(tmp, _state_file(cfg))
 
 
-def load_ruleset(cfg: YaraConfig) -> Ruleset:
-    manifest_path = os.path.join(cfg.rules_path, MANIFEST_NAME)
+def verify_bundle(cfg: YaraConfig, rules_dir: str, signature_path: str) -> Ruleset:
+    """Steps 1 and 3 for the bundle in ``rules_dir`` (signature, hashes, compile); no state is
+    read or written. Used by the worker and by the bundle installer before activation."""
     try:
-        manifest = _read_limited(manifest_path, MAX_MANIFEST_BYTES)
+        manifest = _read_limited(os.path.join(rules_dir, MANIFEST_NAME), MAX_MANIFEST_BYTES)
     except OSError as exc:
         raise RulesetError(f"manifest unreadable: {exc.strerror}") from None
-    verify_signature(cfg, manifest)
+    verify_signature(cfg, manifest, signature_path=signature_path)
     version, files = parse_manifest(manifest)
-    floor = accepted_version(cfg)
-    if version < floor:
-        raise RulesetError(f"ruleset version {version} is older than accepted version {floor}")
-
     sources: dict[str, str] = {}
     for name, digest in sorted(files.items()):
         try:
-            data = _read_limited(os.path.join(cfg.rules_path, name), MAX_RULE_FILE_BYTES)
+            data = _read_limited(os.path.join(rules_dir, name), MAX_RULE_FILE_BYTES)
         except OSError as exc:
             raise RulesetError(f"rule file {name} unreadable: {exc.strerror}") from None
         if hashlib.sha256(data).hexdigest() != digest:
@@ -158,10 +156,17 @@ def load_ruleset(cfg: YaraConfig) -> Ruleset:
         rules = yara.compile(sources=sources, includes=False)
     except yara.Error as exc:
         raise RulesetError(f"ruleset does not compile: {str(exc)[:200]}") from None
-
-    if version > floor:
-        _store_accepted_version(cfg, version)
     return Ruleset(rules, version, hashlib.sha256(manifest).hexdigest(), len(sources))
+
+
+def load_ruleset(cfg: YaraConfig) -> Ruleset:
+    ruleset = verify_bundle(cfg, cfg.rules_path, cfg.ruleset_signature_path)
+    floor = accepted_version(cfg)
+    if ruleset.version < floor:
+        raise RulesetError(f"ruleset version {ruleset.version} is older than accepted version {floor}")
+    if ruleset.version > floor:
+        _store_accepted_version(cfg, ruleset.version)
+    return ruleset
 
 
 class RuleStore:

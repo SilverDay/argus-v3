@@ -106,6 +106,10 @@ yara:
   global_budget_seconds: 1800           # per scan session; worker child killed when exceeded
   memory_limit_mb: 1024                 # RLIMIT_AS of the per-session worker child
   max_file_size_mb: 256                 # larger files are not YARA-scanned (reported)
+  update_url: ""                        # optional https bundle URL for the weekly pull timer
+  update_ca_file: ""
+  max_bundle_mb: 64
+  keep_versions: 3                      # rules/versions/<n> kept for rollback by an admin
 
 virustotal:
   enabled: false                        # hash-only lookups; no file uploads

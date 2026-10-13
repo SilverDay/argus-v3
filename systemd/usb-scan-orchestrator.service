@@ -1,0 +1,63 @@
+# Scan orchestrator usbscand (spec §5.4): unprivileged user usbscan, no shell execution.
+# Talks to the broker (broker.sock), clamd (FILDES), YARA worker, events service; serves
+# state.sock to the GUI and LED. Reads USB content only through broker mounts / broker fds.
+
+[Unit]
+# Spec §11: 3 restarts within 5 minutes -> unit stays failed (crash loop surfaces).
+StartLimitIntervalSec=300
+StartLimitBurst=3
+Description=USB Scan Station orchestrator
+Requires=usb-scan-device-broker.service
+After=usb-scan-device-broker.service usb-scan-events.service usb-scan-yara.service clamav-daemon.service
+Wants=usb-scan-events.service clamav-daemon.service usbguard.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=usbscan
+Group=usbscan
+# Memberships from sysusers.d: usbscan-read (broker mounts), usbscan-audit (events.sock),
+# clamav (clamd socket 0660 clamav:clamav).
+ExecStart=/opt/usb-scan/.venv/bin/python -m src.orchestrator --config /etc/usb-scan/scan_station.yaml
+WorkingDirectory=/opt/usb-scan
+Restart=always
+RestartSec=5
+# Spec §11: watchdog recovery within 30 s; 3 restarts in 5 minutes -> stays failed (NOT_READY
+# on the screen is shown by the GUI as "service unavailable").
+WatchdogSec=30
+TimeoutStopSec=30
+
+StateDirectory=usb-scan/orchestrator
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadOnlyPaths=/etc/usb-scan
+# state.sock lives in /run/usb-scan; quarantine is optional (absent mount -> skipped).
+ReadWritePaths=/run/usb-scan -/var/lib/usb-scan/quarantine
+# AF_NETLINK: udev monitor (pyudev). AF_INET/6: optional VirusTotal lookups only.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @resources
+UMask=0077
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

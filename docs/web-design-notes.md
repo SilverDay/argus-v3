@@ -117,7 +117,7 @@ front (spec §9.1).
 - Request bodies are limited to 64 KiB. Templates autoescape; `|safe` is banned.
 - Flask debug mode makes `create_app` raise outside tests.
 - `wsgi.py` refuses to start when `admin_web.enabled` is false.
-- Unit draft `systemd/usb-scan-web.service`:
+- Unit draft `systemd/usb-scan-admin.service (spec §5.4 name)`:
   - `PrivateDevices`, no capabilities, the syscall filter;
   - USB mounts, quarantine, and the orchestrator and events state made inaccessible;
   - outbound traffic is only needed for the IdP.

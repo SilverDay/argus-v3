@@ -225,6 +225,12 @@ class YaraConfig:
     global_budget_seconds: int = field(default=1800, metadata=_range(10, 86_400))
     memory_limit_mb: int = field(default=1024, metadata=_range(64, 8192))
     max_file_size_mb: int = field(default=256, metadata=_range(1, 2047))
+    # Bundle updates (scripts: python -m src.yara_worker.install). Offline install always
+    # works; set update_url to also pull <url> (a .tar.gz bundle) on the update timer.
+    update_url: str = ""
+    update_ca_file: str = ""
+    max_bundle_mb: int = field(default=64, metadata=_range(1, 1024))
+    keep_versions: int = field(default=3, metadata=_range(2, 20))
 
 
 @dataclass(frozen=True)
@@ -617,6 +623,12 @@ def validate(cfg: Config) -> None:
             errors.append("yara.memory_limit_mb must be at least twice yara.max_file_size_mb")
         if y.per_file_timeout_seconds >= y.global_budget_seconds:
             errors.append("yara.per_file_timeout_seconds must be below yara.global_budget_seconds")
+    if y.update_url:
+        up = urllib.parse.urlsplit(y.update_url)
+        if up.scheme != "https" or not up.hostname or up.username or up.password:
+            errors.append("yara.update_url: https:// URL without credentials required")
+    if y.update_ca_file and not _abs_path_ok(y.update_ca_file):
+        errors.append("yara.update_ca_file: must be an absolute path without '..'")
 
     if cfg.auth.web.oidc_enabled and not cfg.auth.web.require_mfa:
         errors.append("auth.web.require_mfa must be true when OIDC is enabled")

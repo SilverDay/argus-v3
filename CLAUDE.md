@@ -98,6 +98,7 @@ docs/USB-Scan-Station-Spec-v1.5.md — authoritative. When in doubt, check the s
 Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md,
 docs/yara-worker-design-notes.md, docs/gui-design-notes.md, docs/led-design-notes.md,
 docs/events-design-notes.md, docs/web-design-notes.md
+Deployment: docs/deployment.md (scripts/first-boot-setup.sh, systemd/, config/system/)
 
 ## Commit Style
 

@@ -2,6 +2,9 @@
 # Owns the audit database and all outbound delivery (SIEM forwarding, alerts). No USB access.
 
 [Unit]
+# Spec §11: 3 restarts within 5 minutes -> unit stays failed (crash loop surfaces).
+StartLimitIntervalSec=300
+StartLimitBurst=3
 Description=USB Scan Station events service
 Before=usb-scan-orchestrator.service
 Wants=network-online.target

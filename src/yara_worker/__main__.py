@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import grp
 import logging
+import os
 import pwd
 import signal
 import sys
@@ -37,11 +38,33 @@ async def run(cfg) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     watchdog = asyncio.create_task(watchdog_loop())
+    watcher = asyncio.create_task(watch_active_link(server, cfg.yara.rules_path))
     notify("READY=1")
     await stop.wait()
     notify("STOPPING=1")
     watchdog.cancel()
+    watcher.cancel()
     await server.close()
+
+
+async def watch_active_link(server, rules_path: str, interval: float = 30.0, retries: int = 3) -> None:
+    """Reload when the installer switches the ``active`` link (it runs as another user and
+    cannot signal this process). A failed load is retried a few times for the same target:
+    a reload racing the switch may see a mixed bundle and is rejected by the hash checks."""
+    seen = os.path.realpath(rules_path)
+    failures = 0
+    while True:
+        await asyncio.sleep(interval)
+        target = os.path.realpath(rules_path)
+        if target != seen:
+            seen, failures = target, 0
+        elif failures == 0 or failures >= retries:
+            continue
+        if await asyncio.to_thread(server.reload):
+            failures = 0
+            seen = target
+        else:
+            failures += 1
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -19,9 +19,9 @@ bcrypt>=5.0.0
 # USB monitoring (udev events only — no D-Bus mount calls)
 pyudev>=0.24.4
 
-# GPIO (Pi 5). lgpio itself is a Trixie system package made visible through
-# `python3 -m venv --system-site-packages`. Do NOT pip install lgpio.
-rpi-lgpio>=0.6
+# GPIO (Pi 5): the native `lgpio` module from the Trixie package python3-lgpio, made
+# visible through `python3 -m venv --system-site-packages`. Do NOT pip install lgpio.
+# rpi-lgpio is NOT used: it is an RPi.GPIO compatibility shim (installs package RPi.GPIO).
 
 # HTTP / VirusTotal
 httpx>=0.27.0

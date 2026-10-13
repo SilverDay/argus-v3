@@ -1,0 +1,46 @@
+# Status LED (spec §5.1, §5.4). DRAFT — validate on the Pi in Phase 10.
+# Read-only client of the orchestrator state socket; needs only the GPIO chip.
+
+[Unit]
+Description=USB Scan Station status LED
+After=usb-scan-orchestrator.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=usbscan-led
+Group=usbscan-led
+SupplementaryGroups=gpio
+ExecStart=/opt/usb-scan/.venv/bin/python -m src.led --config /etc/usb-scan/scan_station.yaml
+WorkingDirectory=/opt/usb-scan
+Restart=always
+RestartSec=3
+WatchdogSec=30
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+InaccessiblePaths=-/run/usb-scan/mounts
+DevicePolicy=closed
+# Pi 5 header GPIOs: confirm the chip with `gpiodetect` on the target kernel (led.gpiochip).
+DeviceAllow=/dev/gpiochip0 rw
+DeviceAllow=/dev/gpiochip4 rw
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount
+MemoryMax=96M
+
+[Install]
+WantedBy=multi-user.target

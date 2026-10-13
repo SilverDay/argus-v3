@@ -58,6 +58,17 @@ gui:
   show_signature_names: true          # detection names on the public result screen
   fullscreen: true
 
+led:
+  driver: auto                        # auto | lgpio | stub — use lgpio in production
+  gpiochip: 0                         # Pi 5 header GPIOs: verify with `gpiodetect` on the target kernel
+  pin_red: 17                         # BCM numbering, spec §5.1
+  pin_green: 27
+  pin_blue: 22
+  common_anode: false                 # spec: common-cathode RGB LED (GPIO high = on)
+  pwm_frequency_hz: 200
+  brightness_percent: 100
+  frames_per_second: 25
+
 scan:
   global_timeout_seconds: 3600
   max_files: 500000

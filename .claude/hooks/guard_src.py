@@ -11,7 +11,7 @@ import sys
 
 RULES = [
     (re.compile(r"\bRPi\.GPIO\b|^\s*import\s+RPi\b", re.M),
-     "RPi.GPIO is not supported on Pi 5 / Trixie. Use lgpio / rpi-lgpio."),
+     "RPi.GPIO (and the rpi-lgpio shim that provides it) is not used. Use the native lgpio module."),
     (re.compile(r"\bdasbus\b|udisks2|UDisks2", re.I),
      "udisks2/dasbus is replaced by src/broker/. No D-Bus mount calls."),
     (re.compile(r"verify\s*=\s*False|ssl_verify\s*=\s*False|CERT_NONE|check_hostname\s*=\s*False"),

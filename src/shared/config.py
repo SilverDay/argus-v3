@@ -134,6 +134,25 @@ class OrchestratorConfig:
     thermal_zone_path: str = "/sys/class/thermal/thermal_zone0/temp"
 
 
+class LedDriverKind(str, Enum):
+    AUTO = "auto"        # lgpio if importable and the chip opens, else stub (development)
+    LGPIO = "lgpio"      # production: failure to drive the LED is fatal and visible
+    STUB = "stub"
+
+
+@dataclass(frozen=True)
+class LedConfig:
+    driver: LedDriverKind = LedDriverKind.AUTO
+    gpiochip: int = field(default=0, metadata=_range(0, 16))
+    pin_red: int = field(default=17, metadata=_range(0, 27))      # BCM numbering (spec §5.1)
+    pin_green: int = field(default=27, metadata=_range(0, 27))
+    pin_blue: int = field(default=22, metadata=_range(0, 27))
+    common_anode: bool = False                                     # spec: common-cathode (high = on)
+    pwm_frequency_hz: int = field(default=200, metadata=_range(50, 10_000))
+    brightness_percent: int = field(default=100, metadata=_range(5, 100))
+    frames_per_second: int = field(default=25, metadata=_range(5, 100))
+
+
 @dataclass(frozen=True)
 class GuiConfig:
     long_press_ms: int = field(default=3000, metadata=_range(500, 10_000))      # spec §4.3
@@ -290,6 +309,7 @@ class Config:
     broker: BrokerConfig = BrokerConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
     gui: GuiConfig = GuiConfig()
+    led: LedConfig = LedConfig()
     scan: ScanConfig = ScanConfig()
     clamav: ClamAVConfig = ClamAVConfig()
     yara: YaraConfig = YaraConfig()
@@ -393,6 +413,9 @@ def validate(cfg: Config) -> None:
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", cfg.station.station_id):
         errors.append("station.station_id: must be 1-64 chars [A-Za-z0-9_.-]")
+
+    if len({cfg.led.pin_red, cfg.led.pin_green, cfg.led.pin_blue}) != 3:
+        errors.append("led: red, green and blue must use different GPIOs")
 
     if not re.fullmatch(r"[a-z]{2}(_[A-Z]{2})?", cfg.gui.language):
         errors.append("gui.language: expected a locale such as 'en' or 'de_DE'")

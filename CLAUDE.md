@@ -18,7 +18,8 @@ Plan: docs/USB-Scan-Station-Implementation-Plan-v1.5.md
 - `src/gui/` — PySide6 fullscreen kiosk (user: usbscan-gui). Pure display client.
   Zero scan logic. Subscribes to orchestrator state socket; the orchestrator owns state.
   GUI literals: QCoreApplication.translate("usbscan", ...) — never bare tr("...").
-- `src/led/` — GPIO LED controller (group: gpio). lgpio/rpi-lgpio ONLY (NOT RPi.GPIO).
+- `src/led/` — GPIO LED controller (group: gpio). Native lgpio ONLY (python3-lgpio); not the
+  rpi-lgpio shim. Subscribes to the orchestrator state socket directly.
 - `src/web/` — Flask + HTMX admin UI (user: usbscan-web). OIDC/SSO + MFA for remote
   admin. Local named-account fallback only for isolated networks. No shared PIN for admin.
 - `src/events/` — Durable event/logging service (user: usbscan-events).
@@ -71,7 +72,7 @@ yara_complete (if enabled), vt_complete (if enabled)
 
 - Broker RPC:         /run/usb-scan/broker.sock     (0660 root:usbscan, SO_PEERCRED + HMAC)
 - Orchestrator → GUI: /run/usb-scan/state.sock      (0660 usbscan:usbscan-gui)
-- Orchestrator → LED: /run/usb-scan/led.sock        (0660 usbscan:gpio)
+- Orchestrator → LED: same state.sock (LED service is a read-only client, uid usbscan-led)
 - YARA worker:        /run/usb-scan/yara.sock       (0660 yarascan:usbscan, SO_PEERCRED)
 - Events service:     /run/usb-scan/events.sock     (0660 usbscan:usbscan-events)
 
@@ -91,7 +92,7 @@ docs/USB-Scan-Station-Spec-v1.5.md — authoritative. When in doubt, check the s
 §3.3 verdict semantics · §3.4 coverage metrics · §3.5 operator_hold ·
 §5.4 service privileges · §6.2 config validation · §8.2 USBGuard/broker · §10.1 PIN
 Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md,
-docs/yara-worker-design-notes.md, docs/gui-design-notes.md
+docs/yara-worker-design-notes.md, docs/gui-design-notes.md, docs/led-design-notes.md
 
 ## Commit Style
 

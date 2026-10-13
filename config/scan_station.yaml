@@ -48,6 +48,8 @@ orchestrator:
   result_display_seconds: 300          # result shown after logical eject (removal not observable)
   storage_wait_seconds: 10             # authorized USB device without storage -> REJECTED
   thermal_zone_path: /sys/class/thermal/thermal_zone0/temp
+  state_dir: /var/lib/usb-scan/orchestrator   # auth.db (PIN lockout), crash marker, event spool
+  event_spool_max_mb: 64               # used only while the events service is unreachable
 
 gui:
   long_press_ms: 3000                 # hidden operator area, spec §4.3
@@ -117,7 +119,7 @@ virustotal:
   request_timeout_seconds: 15
   suspicious_min_malicious: 1           # >= N engines "malicious" -> SUSPICIOUS
   threat_min_malicious: 5               # >= N engines "malicious" -> THREAT
-  cache_path: /var/lib/usb-scan/db/vt_cache.db   # cache_ttl_days: 0 disables the cache
+  cache_path: /var/lib/usb-scan/orchestrator/vt_cache.db   # cache_ttl_days: 0 disables the cache
   finish_wait_seconds: 120              # wait for outstanding lookups after the local scan
   ca_file: ""                           # optional extra CA; verification is always on
 
@@ -159,7 +161,6 @@ alerts:
     url: ""                             # https:// only
     token_ref: ""                       # e.g. credential:alert_webhook_token (Authorization: Bearer)
     timeout_seconds: 10
-    retry_delay_seconds: 5
     ca_file: ""
   email:
     enabled: false
@@ -198,9 +199,29 @@ logging:
     ca_file: ""
 
 events:
-  db_path: /var/lib/usb-scan/db/events.db
-  hmac_key_ref: file:/etc/usb-scan/secrets/hmac.key
+  db_path: /var/lib/usb-scan/events/events.db     # owned by usbscan-events, 0600
+  socket_path: /run/usb-scan/events.sock
+  socket_group: usbscan                 # socket 0660 usbscan-events:usbscan
+  writer_users: [usbscan]               # orchestrator: append + query
+  reader_users: [usbscan-web]           # admin web: query only
+  hmac_key_ref: file:/etc/usb-scan/secrets/events-checkpoint.key   # >= 32 bytes
   checkpoint_interval_hours: 1
+  retention_days: 180                   # only fully delivered events are pruned
+  min_free_mb: 256                      # writes refused below this (NOT_READY)
+  max_attempts: 10                      # per queue entry, then dead-lettered
+  backoff_initial_seconds: 5            # doubles per attempt
+  backoff_max_seconds: 600
+  forwarding:                           # off-device audit forwarding (SIEM / central collector)
+    enabled: false
+    transport: syslog                   # syslog (RFC 5424 over TLS) | webhook (https)
+    host: ""
+    port: 6514
+    url: ""
+    token_ref: ""                       # webhook bearer token
+    ca_file: ""
+    client_cert_file: ""                # mTLS station identity (spec §9.2)
+    client_key_ref: ""                  # file: or credential: reference
+    timeout_seconds: 10
 
 health:
   min_free_disk_mb: 512

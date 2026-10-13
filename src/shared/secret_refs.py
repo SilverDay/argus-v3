@@ -101,3 +101,20 @@ def resolve_secret(ref: str, env_override: str | None = None, *, strip: bool = T
     if not data:
         raise SecretError("secret is empty")
     return data
+
+
+def secret_path(ref: str) -> str:
+    """Filesystem path behind a ``file:`` or ``credential:`` reference, for APIs that can only
+    load a secret from a file (e.g. a TLS private key). The file is checked like any other
+    secret file (regular, not a symlink, not accessible by "other")."""
+    validate_ref(ref)
+    scheme, _, target = ref.partition(":")
+    if scheme == "env":
+        raise SecretError("this secret must be a file: or credential: reference")
+    if scheme == "credential":
+        cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+        if not cred_dir:
+            raise SecretError("CREDENTIALS_DIRECTORY is not set (systemd LoadCredential= missing?)")
+        target = os.path.join(cred_dir, target)
+    _read_protected_file(target)
+    return target

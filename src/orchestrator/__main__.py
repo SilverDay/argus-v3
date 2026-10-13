@@ -17,9 +17,8 @@ from src.shared.logging_setup import setup_logging
 from src.shared.sd_notify import notify, watchdog_loop
 from src.shared.secret_refs import SecretError, resolve_secret
 
-from .alerting import build_dispatcher
 from .broker_client import BrokerClient
-from .event_sink import JsonlEventSink
+from .event_client import EventClient
 from .orchestrator import Orchestrator
 from .quarantine import Quarantine
 from .scanner_clamav import ClamdClient
@@ -43,11 +42,15 @@ async def run(cfg, key: bytes) -> None:
     loop = asyncio.get_running_loop()
     broker = BrokerClient(cfg.broker.socket_path, key, timeout=cfg.broker.command_timeout_seconds + 5)
     clamd = ClamdClient(cfg.clamav.socket_path, connect_timeout=cfg.clamav.connect_timeout_seconds)
-    sink = JsonlEventSink(os.path.dirname(cfg.events.db_path))
+    sink = EventClient(cfg.events.socket_path, cfg.orchestrator.state_dir,
+                       spool_max_bytes=cfg.orchestrator.event_spool_max_mb * 1024 * 1024)
+    sink.start()
 
     auth = None
     try:
-        store = SqliteLockoutStore(cfg.events.db_path)
+        # Authoritative lockout state lives with the orchestrator (owner decision, Phase 8);
+        # every attempt is also recorded as an AUTH_RESULT event in the audit chain.
+        store = SqliteLockoutStore(os.path.join(cfg.orchestrator.state_dir, "auth.db"))
         auth = AuthManager(store, lambda level: resolve_secret(cfg.pin.hash_ref).decode("ascii"),
                            max_failures=cfg.pin.max_failed_attempts,
                            lockout_seconds=cfg.pin.lockout_minutes * 60, min_cost=cfg.pin.bcrypt_cost)
@@ -70,13 +73,12 @@ async def run(cfg, key: bytes) -> None:
     quarantine = Quarantine(cfg.quarantine, cfg.station.station_id) if cfg.quarantine.quarantine_on_threat else None
 
     orch: Orchestrator | None = None
-    alerts = build_dispatcher(cfg, lambda ev: orch.publish(ev), resolve_secret)
     server = IPCServer(cfg.orchestrator.state_socket, allowed_uids=clients, group_gid=group_gid,
                        inbound_types=INBOUND_OPERATOR_TYPES,
                        on_message=lambda ev, creds: orch.on_operator_message(ev, creds),
                        on_connect=lambda creds: orch.snapshot(creds))
     orch = Orchestrator(cfg, broker, clamd, sink, server.broadcast, auth=auth, gui_uids=gui_uids,
-                        vt=vt, quarantine=quarantine, alerts=alerts)
+                        vt=vt, quarantine=quarantine)
     await server.start()
 
     await orch.recover_interrupted()
@@ -109,7 +111,7 @@ async def run(cfg, key: bytes) -> None:
         t.cancel()
     if orch.active and orch.active.task and not orch.active.task.done():
         orch.active.task.cancel()
-    await alerts.aclose()
+    await sink.close()
     if vt is not None:
         await vt.aclose()
     await server.close()

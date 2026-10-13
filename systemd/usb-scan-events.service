@@ -1,0 +1,61 @@
+# Durable event/audit service (spec §3.7, §5.4). DRAFT — validate on the Pi in Phase 10.
+# Owns the audit database and all outbound delivery (SIEM forwarding, alerts). No USB access.
+
+[Unit]
+Description=USB Scan Station events service
+Before=usb-scan-orchestrator.service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=usbscan-events
+Group=usbscan-events
+# Socket group "usbscan" lets the orchestrator connect (0660 usbscan-events:usbscan).
+SupplementaryGroups=usbscan
+ExecStart=/opt/usb-scan/.venv/bin/python -m src.events --config /etc/usb-scan/scan_station.yaml
+WorkingDirectory=/opt/usb-scan
+Restart=always
+RestartSec=5
+# Spec §11 (service recovery): WatchdogSec=30 for orchestrator/broker/events.
+WatchdogSec=30
+TimeoutStopSec=20
+
+StateDirectory=usb-scan/events
+StateDirectoryMode=0700
+# /run/usb-scan is shared by several services: created by tmpfiles.d (Phase 10), not
+# RuntimeDirectory= (which would chown it to this service user).
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/run/usb-scan/mounts -/var/lib/usb-scan/quarantine
+ReadOnlyPaths=/etc/usb-scan
+ReadWritePaths=/run/usb-scan
+# Outbound only: SIEM collector, webhook, SMTP. Narrow with IPAddressAllow= per site.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Validate on the Pi: CPython without JIT should not need W+X mappings.
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @resources
+UMask=0077
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

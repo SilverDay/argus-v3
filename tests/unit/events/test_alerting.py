@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from src.orchestrator.alerting import (
-    AlertDispatcher, EmailChannel, Pseudonymizer, SyslogChannel, WebhookChannel, build_dispatcher, format_cef,
-    health_alert, verdict_alert,
+from src.events.alerting import (
+    EmailChannel, Pseudonymizer, SyslogChannel, WebhookChannel, alert_from_event, build_alert_channels,
+    build_pseudonymizer, enabled_alert_channels, format_cef, health_alert, verdict_alert, wants_alert,
 )
 from src.shared.config import FilenamePrivacy, load_config_from_dict
 from src.shared.models import CoverageMetrics, EventType, ScanMetadata, ScanResult, Severity, ThreatEntry, Verdict
@@ -55,10 +55,6 @@ def test_verdict_alert_applies_privacy():
 
 # --- webhook ------------------------------------------------------------------------
 
-async def no_sleep(_):
-    return None
-
-
 async def test_webhook_posts_json_with_bearer():
     seen = []
 
@@ -67,7 +63,7 @@ async def test_webhook_posts_json_with_bearer():
         return httpx.Response(204)
 
     cfg = alert_cfg(webhook={"enabled": True, "url": "https://siem.example.org/hook"}).webhook
-    ch = WebhookChannel(cfg, TOKEN, transport=httpx.MockTransport(handler), sleep=no_sleep)
+    ch = WebhookChannel(cfg, TOKEN, transport=httpx.MockTransport(handler))
     await ch.send({"verdict": "THREAT", "station_id": "s"})
     (req,) = seen
     assert req.method == "POST" and str(req.url) == "https://siem.example.org/hook"
@@ -76,22 +72,12 @@ async def test_webhook_posts_json_with_bearer():
     await ch.aclose()
 
 
-async def test_webhook_retries_once_then_fails():
-    codes = [500, 200]
-    slept = []
-
-    async def sleep(s):
-        slept.append(s)
-
+async def test_webhook_non_2xx_is_a_failure():
     cfg = alert_cfg(webhook={"enabled": True, "url": "https://h.example/x"}).webhook
-    ch = WebhookChannel(cfg, None, transport=httpx.MockTransport(lambda r: httpx.Response(codes.pop(0))), sleep=sleep)
-    await ch.send({})
-    assert slept == [5] and not codes
-    ch2 = WebhookChannel(cfg, None, transport=httpx.MockTransport(lambda r: httpx.Response(503)), sleep=no_sleep)
-    with pytest.raises(RuntimeError, match="http_503"):
-        await ch2.send({})
+    ch = WebhookChannel(cfg, None, transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    with pytest.raises(RuntimeError, match="http_503"):          # the durable queue retries
+        await ch.send({})
     await ch.aclose()
-    await ch2.aclose()
 
 
 def test_webhook_url_must_be_https():
@@ -232,55 +218,39 @@ async def test_syslog_send_uses_tls_with_hostname():
     assert b"CEF:0|Argus|USB Scan Station|0.1.0|not_ready:NOT_READY|" in sent["data"]
 
 
-# --- dispatcher -------------------------------------------------------------------------
+# --- alerts from stored events ----------------------------------------------------------
 
-class Recorder:
-    def __init__(self, name, fail=False):
-        self.name, self.fail, self.got = name, fail, []
-
-    async def send(self, alert):
-        if self.fail:
-            raise ConnectionRefusedError("refused by https://secret-host/?token=abc")
-        self.got.append(alert)
+def stored(event_type, payload, seq=7):
+    from src.events.store import StoredEvent
+    return StoredEvent(seq, "e-%d" % seq, event_type.value, "scan-1", "station-001", "t", "t", payload, "p", "h")
 
 
-async def test_channels_are_independent_and_recorded():
-    events = []
-
-    async def publish(ev):
-        events.append(ev)
-
-    good, bad = Recorder("webhook"), Recorder("email", fail=True)
-    d = AlertDispatcher(alert_cfg(), [bad, good], publish, Pseudonymizer(FilenamePrivacy.OMIT, None))
-    d.on_result(result(), DEVICE)
-    await d.drain()
-    assert len(good.got) == 1
-    rec = {e.payload["channel"]: e.payload["status"] for e in events}
-    assert events[0].event_type is EventType.ALERT_DELIVERY
-    assert rec == {"email": "failed:ConnectionRefusedError", "webhook": "delivered"}
-    assert "token" not in json.dumps([e.payload for e in events])      # no error text leaks
+def test_alert_from_events():
+    pseudo = Pseudonymizer(FilenamePrivacy.HASH, b"k")
+    payload = result().to_dict() | {"device": DEVICE}
+    a = alert_from_event(stored(EventType.VERDICT, payload), pseudo)
+    assert a["verdict"] == "THREAT" and a["event_seq"] == 7 and a["device"]["serial"].startswith("hmac:")
+    h = alert_from_event(stored(EventType.HEALTH_GATE_FAILED, {"failures": ["broker_unavailable"]}), pseudo)
+    assert h["verdict"] == "NOT_READY" and h["reason_codes"] == ["broker_unavailable"]
+    t = alert_from_event(stored(EventType.TAMPER_DETECTED, {"reason": "modified", "first_bad_seq": 3}), pseudo)
+    assert t["kind"] == "tamper" and t["reason_codes"] == ["modified@3"]
+    with pytest.raises(ValueError):
+        alert_from_event(stored(EventType.SCAN_STARTED, {}), pseudo)
 
 
-async def test_alert_selection():
-    good = Recorder("webhook")
-
-    async def publish(ev):
-        pass
-
-    d = AlertDispatcher(alert_cfg(verdicts=["THREAT"], not_ready=False), [good], publish,
-                        Pseudonymizer(FilenamePrivacy.OMIT, None))
-    d.on_result(result(Verdict.CLEAN), DEVICE)
-    d.on_result(result(Verdict.SUSPICIOUS), DEVICE)
-    d.on_not_ready("station-001", ["x"])
-    d.on_result(result(Verdict.THREAT), DEVICE)
-    await d.drain()
-    assert [a["verdict"] for a in good.got] == ["THREAT"]
+def test_alert_selection():
+    cfg = alert_cfg(verdicts=["THREAT"], not_ready=False)
+    assert wants_alert(cfg, EventType.VERDICT, {"verdict": "THREAT"})
+    assert not wants_alert(cfg, EventType.VERDICT, {"verdict": "SUSPICIOUS"})
+    assert not wants_alert(cfg, EventType.HEALTH_GATE_FAILED, {})
+    assert wants_alert(cfg, EventType.TAMPER_DETECTED, {})          # always alerted
+    assert not wants_alert(cfg, EventType.ALERT_DELIVERY, {})
     from src.shared.config import ConfigError
     with pytest.raises(ConfigError):
         alert_cfg(verdicts=["CLEAN"])
 
 
-def test_build_dispatcher_reports_unresolvable_secrets():
+def test_build_channels_reports_unresolvable_secrets():
     cfg = load_config_from_dict({"alerts": {
         "webhook": {"enabled": True, "url": "https://h.example/x", "token_ref": "credential:hook"},
         "email": EMAIL, "syslog": SYSLOG}, "logging": {"filename_privacy": "hash",
@@ -291,9 +261,7 @@ def test_build_dispatcher_reports_unresolvable_secrets():
             return b"key"
         raise OSError("missing")
 
-    async def publish(ev):
-        pass
-
-    d = build_dispatcher(cfg, publish, resolve)
-    assert d.unavailable == ["webhook", "email"] and [c.name for c in d.channels] == ["syslog"]
-    assert d.pseudo.key == b"key"
+    channels, unavailable = build_alert_channels(cfg, resolve)
+    assert unavailable == ["alert:webhook", "alert:email"] and list(channels) == ["alert:syslog"]
+    assert build_pseudonymizer(cfg, resolve).key == b"key"
+    assert enabled_alert_channels(cfg.alerts) == ["alert:webhook", "alert:email", "alert:syslog"]

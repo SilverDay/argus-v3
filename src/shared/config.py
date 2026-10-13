@@ -73,6 +73,11 @@ class AlertSyslogFormat(str, Enum):
     CEF = "cef"                           # ArcSight CEF message body
 
 
+class ForwardTransport(str, Enum):
+    SYSLOG = "syslog"                     # RFC 5424 over TLS (RFC 5425), JSON body
+    WEBHOOK = "webhook"                   # HTTPS POST, JSON body
+
+
 class SyslogTransport(str, Enum):
     UDP = "udp"
     TCP = "tcp"
@@ -143,6 +148,9 @@ class OrchestratorConfig:
     result_display_seconds: int = field(default=300, metadata=_range(10, 3600))
     storage_wait_seconds: int = field(default=10, metadata=_range(1, 60))
     thermal_zone_path: str = "/sys/class/thermal/thermal_zone0/temp"
+    # Orchestrator-owned state (user usbscan): PIN lockout DB, crash marker, event spool.
+    state_dir: str = "/var/lib/usb-scan/orchestrator"
+    event_spool_max_mb: int = field(default=64, metadata=_range(1, 4096))
 
 
 class LedDriverKind(str, Enum):
@@ -234,7 +242,7 @@ class VirusTotalConfig:
     # Owner decision (Phase 7): "malicious" engine count thresholds for hash reputation.
     suspicious_min_malicious: int = field(default=1, metadata=_range(1, 1000))
     threat_min_malicious: int = field(default=5, metadata=_range(1, 1000))
-    cache_path: str = "/var/lib/usb-scan/db/vt_cache.db"
+    cache_path: str = "/var/lib/usb-scan/orchestrator/vt_cache.db"
     finish_wait_seconds: int = field(default=120, metadata=_range(0, 3600))   # after the local scan
     ca_file: str = ""                     # optional extra CA bundle; verification is always on
 
@@ -287,7 +295,6 @@ class WebhookAlertConfig:
     url: str = ""                         # https:// only
     token_ref: str = field(default="", metadata=_secret_ref())   # sent as "Authorization: Bearer"
     timeout_seconds: int = field(default=10, metadata=_range(1, 120))
-    retry_delay_seconds: int = field(default=5, metadata=_range(0, 300))
     ca_file: str = ""
 
 
@@ -352,10 +359,37 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class ForwardingConfig:
+    """Off-device event forwarding to the central collector / SIEM (spec §3.7, §9.2)."""
+    enabled: bool = False
+    transport: ForwardTransport = ForwardTransport.SYSLOG
+    host: str = ""                        # syslog
+    port: int = field(default=6514, metadata=_range(1, 65535))
+    url: str = ""                         # webhook, https:// only
+    token_ref: str = field(default="", metadata=_secret_ref())
+    ca_file: str = ""
+    # mTLS client identity (spec §9.2). The key must be a file: or credential: reference
+    # because the TLS stack loads it from a file.
+    client_cert_file: str = ""
+    client_key_ref: str = field(default="", metadata=_secret_ref())
+    timeout_seconds: int = field(default=10, metadata=_range(1, 120))
+
+
+@dataclass(frozen=True)
 class EventsConfig:
-    db_path: str = "/var/lib/usb-scan/db/events.db"
-    hmac_key_ref: str = field(default="file:/etc/usb-scan/secrets/hmac.key", metadata=_secret_ref())
+    db_path: str = "/var/lib/usb-scan/events/events.db"
+    socket_path: str = "/run/usb-scan/events.sock"
+    socket_group: str = "usbscan"         # socket 0660 usbscan-events:<group>
+    writer_users: tuple[str, ...] = ("usbscan",)          # may append events
+    reader_users: tuple[str, ...] = ("usbscan-web",)      # query only
+    hmac_key_ref: str = field(default="file:/etc/usb-scan/secrets/events-checkpoint.key", metadata=_secret_ref())
     checkpoint_interval_hours: int = field(default=1, metadata=_range(1, 168))
+    retention_days: int = field(default=180, metadata=_range(7, 3650))
+    min_free_mb: int = field(default=256, metadata=_range(1, 1_000_000))
+    max_attempts: int = field(default=10, metadata=_range(1, 1000))
+    backoff_initial_seconds: int = field(default=5, metadata=_range(1, 3600))
+    backoff_max_seconds: int = field(default=600, metadata=_range(1, 86_400))
+    forwarding: ForwardingConfig = ForwardingConfig()
 
 
 @dataclass(frozen=True)
@@ -576,6 +610,7 @@ def validate(cfg: Config) -> None:
 
     if cfg.logging.level.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         errors.append("logging.level must be DEBUG/INFO/WARNING/ERROR/CRITICAL")
+    _validate_events(cfg, errors)
     if cfg.logging.syslog.enabled and not cfg.logging.syslog.host:
         errors.append("logging.syslog.enabled requires logging.syslog.host")
 
@@ -594,6 +629,51 @@ def validate(cfg: Config) -> None:
 
 _EMAIL = re.compile(r"[^@\s<>\"',;]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}))*\.?|\[?[0-9A-Fa-f:.]+\]?")
+
+
+def _abs_path_ok(value: str) -> bool:
+    return value.startswith("/") and ".." not in value.split("/")
+
+
+def _validate_events(cfg: Config, errors: list[str]) -> None:
+    e = cfg.events
+    for name in ("db_path", "socket_path"):
+        if not _abs_path_ok(getattr(e, name)):
+            errors.append(f"events.{name}: must be an absolute path without '..'")
+    if not _abs_path_ok(cfg.orchestrator.state_dir):
+        errors.append("orchestrator.state_dir: must be an absolute path without '..'")
+    if not e.hmac_key_ref:
+        errors.append("events.hmac_key_ref is required (audit checkpoints)")
+    for name in ("socket_group",):
+        if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", getattr(e, name)):
+            errors.append(f"events.{name}: invalid group name")
+    for name in ("writer_users", "reader_users"):
+        for user in getattr(e, name):
+            if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user):
+                errors.append(f"events.{name}: invalid user name {user!r}")
+    if not e.writer_users:
+        errors.append("events.writer_users: at least the orchestrator user is required")
+    if set(e.writer_users) & set(e.reader_users):
+        errors.append("events: a user cannot be both writer and reader-only")
+    if e.backoff_initial_seconds > e.backoff_max_seconds:
+        errors.append("events.backoff_initial_seconds must be <= backoff_max_seconds")
+    f = e.forwarding
+    for name in ("ca_file", "client_cert_file"):
+        if getattr(f, name) and not _abs_path_ok(getattr(f, name)):
+            errors.append(f"events.forwarding.{name}: must be an absolute path without '..'")
+    if bool(f.client_cert_file) != bool(f.client_key_ref):
+        errors.append("events.forwarding: client_cert_file and client_key_ref must be set together (mTLS)")
+    if f.client_key_ref.startswith("env:"):
+        errors.append("events.forwarding.client_key_ref: must be a file: or credential: reference")
+    if f.enabled:
+        if f.transport is ForwardTransport.SYSLOG and (not f.host or not _HOST.fullmatch(f.host)):
+            errors.append("events.forwarding.host: a host name is required for syslog forwarding")
+        if f.transport is ForwardTransport.WEBHOOK:
+            parts = urllib.parse.urlsplit(f.url)
+            if parts.scheme != "https" or not parts.hostname:
+                errors.append("events.forwarding.url: must be an https:// URL")
+            elif parts.username or parts.password:
+                errors.append("events.forwarding.url: credentials in the URL are not allowed (use token_ref)")
 
 
 def _validate_alerts(a: AlertsConfig, errors: list[str]) -> None:

@@ -1,12 +1,11 @@
-"""Phase 7 modules wired into the orchestrator (VirusTotal, quarantine, alerting)."""
-import asyncio
+"""Optional modules wired into the orchestrator (VirusTotal, quarantine). Alerting is
+tested with the events service (tests/unit/events)."""
 import hashlib
 import json
 import os
 
 import httpx
 
-from src.orchestrator.alerting import AlertDispatcher, Pseudonymizer, WebhookChannel
 from src.orchestrator.quarantine import Quarantine
 from src.orchestrator.virustotal import VirusTotalClient, VtCache
 from src.shared.models import EventType
@@ -129,70 +128,6 @@ async def test_vt_hash_budget_exhausted_is_reported(harness, env):
     (v,) = verdicts(events)
     assert v["coverage"]["vt_complete"] is False and "virustotal_hash_budget=1" in v["reason_codes"]
     assert v["verdict"] == "CLEAN"                                 # advisory
-
-
-# --- alerting -----------------------------------------------------------------------
-
-def webhook_factory(posts, status=200):
-    def build(cfg, orch_ref):
-        hook = cfg.alerts.webhook
-        ch = WebhookChannel(hook, "tok", transport=httpx.MockTransport(
-            lambda r: (posts.append(json.loads(r.content)), httpx.Response(status))[1]),
-            sleep=lambda s: asyncio.sleep(0))
-        return AlertDispatcher(cfg.alerts, [ch], lambda ev: orch_ref[0].publish(ev),
-                               Pseudonymizer(cfg.logging.filename_privacy, b"pseudo-key"))
-    return build
-
-
-HOOK = {"webhook": {"enabled": True, "url": "https://soc.example.org/hook"}}
-
-
-async def test_threat_scan_posts_webhook(harness, env):
-    """Plan Phase 7 acceptance: malware scan with webhook configured -> webhook POSTed with THREAT."""
-    (env["part1"] / "eicar.com").write_bytes(b"..EVIL..")
-    posts = []
-    orch, *_, events, _ = harness({"alerts": HOOK}, alerts=webhook_factory(posts))
-    await start(orch)
-    await run_scan(orch)
-    await orch.alerts.drain()
-    (alert,) = posts
-    assert alert["verdict"] == "THREAT" and alert["threats"][0]["signature"] == "Win.Test.Evil"
-    assert "eicar" not in json.dumps(alert)                       # filename_privacy=hash by default
-    assert alert["device"]["serial"].startswith("hmac:")
-    assert of_type(events, EventType.ALERT_DELIVERY) == [
-        {"channel": "webhook", "status": "delivered", "alert_kind": "verdict", "verdict": "THREAT"}]
-    assert orch.state.value == "RESULT"
-
-
-async def test_clean_scan_sends_no_alert_and_failure_never_changes_verdict(harness, env):
-    posts = []
-    orch, *_, events, _ = harness({"alerts": HOOK}, alerts=webhook_factory(posts))
-    await start(orch)
-    await run_scan(orch)
-    await orch.alerts.drain()
-    assert posts == [] and verdicts(events)[0]["verdict"] == "CLEAN"
-
-    (env["part1"] / "x.exe").write_bytes(b"..EVIL..")
-    failing = []
-    orch2, *_, events2, sink2 = harness({"alerts": HOOK}, alerts=webhook_factory(failing, status=500))
-    await start(orch2)
-    await run_scan(orch2)
-    await orch2.alerts.drain()
-    assert len(failing) == 2                                       # first try + one retry
-    assert of_type(events2, EventType.ALERT_DELIVERY)[0]["status"] == "failed:http_500"
-    assert committed(sink2)[-1]["verdict"] == "THREAT"
-
-
-async def test_not_ready_alert(harness, env):
-    posts = []
-    orch, broker, *_ = harness({"alerts": HOOK}, alerts=webhook_factory(posts))
-    broker.alive = False
-    await orch.check_health()
-    await orch.alerts.drain()
-    assert posts[0]["verdict"] == "NOT_READY" and "broker_unavailable" in posts[0]["reason_codes"]
-    await orch.check_health()                                       # unchanged failure: no repeat
-    await orch.alerts.drain()
-    assert len(posts) == 1
 
 
 # --- quarantine -----------------------------------------------------------------------

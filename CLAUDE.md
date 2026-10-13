@@ -23,7 +23,8 @@ Plan: docs/USB-Scan-Station-Implementation-Plan-v1.5.md
 - `src/web/` — Flask + HTMX admin UI (user: usbscan-web). OIDC/SSO + MFA for remote
   admin. Local named-account fallback only for isolated networks. No shared PIN for admin.
 - `src/events/` — Durable event/logging service (user: usbscan-events).
-  SQLite WAL, event hash chain, SIEM forwarding queue.
+  SQLite WAL (synchronous=FULL), event hash chain + HMAC checkpoints, durable delivery
+  queues for SIEM forwarding AND alerts. The orchestrator never sends alerts itself.
 - `src/shared/` — Config loader, data models, IPC protocol, auth, logging, secret refs.
   No hardware deps; must run on a dev laptop.
 
@@ -74,7 +75,7 @@ yara_complete (if enabled), vt_complete (if enabled)
 - Orchestrator → GUI: /run/usb-scan/state.sock      (0660 usbscan:usbscan-gui)
 - Orchestrator → LED: same state.sock (LED service is a read-only client, uid usbscan-led)
 - YARA worker:        /run/usb-scan/yara.sock       (0660 yarascan:usbscan, SO_PEERCRED)
-- Events service:     /run/usb-scan/events.sock     (0660 usbscan:usbscan-events)
+- Events service:     /run/usb-scan/events.sock     (0660 usbscan-events:usbscan, SO_PEERCRED writer/reader)
 
 ## Test Commands
 
@@ -92,7 +93,8 @@ docs/USB-Scan-Station-Spec-v1.5.md — authoritative. When in doubt, check the s
 §3.3 verdict semantics · §3.4 coverage metrics · §3.5 operator_hold ·
 §5.4 service privileges · §6.2 config validation · §8.2 USBGuard/broker · §10.1 PIN
 Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md,
-docs/yara-worker-design-notes.md, docs/gui-design-notes.md, docs/led-design-notes.md
+docs/yara-worker-design-notes.md, docs/gui-design-notes.md, docs/led-design-notes.md,
+docs/events-design-notes.md
 
 ## Commit Style
 

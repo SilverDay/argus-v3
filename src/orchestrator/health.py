@@ -2,16 +2,17 @@
 
 Failure codes: broker_unavailable, clamav_unavailable, signatures_unknown,
 signatures_stale, yara_unavailable (mandatory YARA without a verified ruleset or
-reachable worker), disk_space_low, event_store_unwritable,
-clock_invalid, thermal_limit. Warnings (do not block): pin_not_configured,
+reachable worker), disk_space_low, clock_invalid, thermal_limit, and the event sink's
+own failures (event_store_unavailable, event_store_unwritable, audit_chain_broken,
+event_spool_pending). Warnings (do not block): pin_not_configured,
 thermal_unknown.
 """
 from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from src.shared.config import Config, EngineRole
@@ -41,7 +42,8 @@ def read_cpu_temp(path: str) -> float | None:
 
 
 async def run_checks(cfg: Config, broker: BrokerClient, clamd: ClamdClient, *,
-                     yara: YaraClient | None = None, now: float | None = None) -> HealthReport:
+                     yara: YaraClient | None = None, now: float | None = None,
+                     events: Callable[[], Awaitable[list[str]]] | None = None) -> HealthReport:
     now = time.time() if now is None else now
     rep = HealthReport()
 
@@ -88,11 +90,10 @@ async def run_checks(cfg: Config, broker: BrokerClient, clamd: ClamdClient, *,
     except OSError:
         rep.failures.append("disk_space_low")
 
-    try:
-        with tempfile.NamedTemporaryFile(dir=os.path.dirname(cfg.events.db_path), prefix=".probe-"):
-            pass
-    except OSError:
-        rep.failures.append("event_store_unwritable")
+    if events is None:
+        rep.failures.append("event_store_unavailable")
+    else:
+        rep.failures.extend(await events())
 
     if time.gmtime(now).tm_year < cfg.health.min_valid_year:
         rep.failures.append("clock_invalid")

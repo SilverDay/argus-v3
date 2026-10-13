@@ -118,6 +118,9 @@ class EventType(str, Enum):
     LOCKOUT_STATE = "lockout_state"
     QUARANTINE_RESULT = "quarantine_result"      # no paths in the payload (protected sidecar only)
     ALERT_DELIVERY = "alert_delivery"
+    AUDIT_CHECKPOINT = "audit_checkpoint"        # HMAC over the chain head (events service)
+    TAMPER_DETECTED = "tamper_detected"          # audit chain verification failed
+    TAMPER_ACKNOWLEDGED = "tamper_acknowledged"  # administrator re-anchored after investigation
     # Clients -> orchestrator (restricted operator RPC)
     OPERATOR_PIN_SUBMIT = "operator_pin_submit"
     OPERATOR_ACK = "operator_ack"

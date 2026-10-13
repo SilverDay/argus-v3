@@ -1,17 +1,15 @@
-"""Alert dispatch (spec §3.7): webhook, e-mail and syslog (RFC 5424 JSON or CEF) channels.
+"""Alert channels (spec §3.7): webhook, e-mail and syslog (RFC 5424 JSON or CEF).
 
-* Alerts are sent asynchronously after the verdict is committed and never change it.
-* Channels are independent: one failing channel does not affect the others
-  (``asyncio.gather(..., return_exceptions=True)``); each outcome is recorded as an
-  ``alert_delivery`` event without secrets or file names.
+* Runs in the events service (owner decision, Phase 8). Alerts are derived from committed
+  events (VERDICT, HEALTH_GATE_FAILED, TAMPER_DETECTED) and delivered through the durable
+  queue in ``forwarder.py``: each channel is an independent queue with retries, backoff and
+  dead-lettering, so alerting can never change or delay a verdict.
 * Transport security: webhook https only; SMTP with STARTTLS (mandatory, fails if the
   server does not offer it) or implicit TLS; syslog over TLS (RFC 5425 octet-counting
   framing). Certificates and host names are always verified; ``ca_file`` adds trust.
 * Privacy (spec §3.7): file paths and device serials follow ``logging.filename_privacy``.
   ``hash`` uses HMAC-SHA256 with the pseudonymisation key; without a key the values are
   omitted (an unkeyed hash of a file name can be brute-forced).
-* Interim delivery is best effort with one webhook retry. The durable, acknowledged
-  delivery queue belongs to the events service (Phase 8).
 """
 from __future__ import annotations
 
@@ -30,12 +28,11 @@ from typing import Any, Protocol
 import httpx
 
 from src.shared.config import AlertsConfig, AlertSyslogFormat, Config, FilenamePrivacy, SmtpSecurity
-from src.shared.models import EventType, ScanEvent, ScanResult, Verdict, format_utc, utc_now
+from src.shared.models import EventType, ScanResult, Verdict, format_utc, utc_now
 
 log = logging.getLogger(__name__)
 PRODUCT_VERSION = "0.1.0"
 MAX_THREATS = 50
-Publish = Callable[[ScanEvent], Awaitable[None]]
 
 _SYSLOG_SEVERITY = {"THREAT": 2, "ERROR": 3, "NOT_READY": 3}          # crit / err; others warning (4)
 _CEF_SEVERITY = {"THREAT": 10, "ERROR": 7, "NOT_READY": 7, "SUSPICIOUS": 6, "INCOMPLETE": 5, "REJECTED": 4}
@@ -137,11 +134,16 @@ def format_cef(alert: dict[str, Any]) -> str:
     return f"CEF:0|{header}|" + " ".join(f"{k}={_cef_ext(v)}" for k, v in ext.items())
 
 
-def format_rfc5424(alert: dict[str, Any], body: str) -> bytes:
-    pri = FACILITY_LOCAL0 * 8 + _SYSLOG_SEVERITY.get(alert["verdict"], 4)
-    host = "".join(c for c in alert["station_id"] if 33 <= ord(c) <= 126)[:255] or "-"
-    msg = f"<{pri}>1 {format_utc(utc_now())} {host} usb-scan {os.getpid()} ALERT - {body}"
+def rfc5424(station_id: str, severity: int, msgid: str, body: str) -> bytes:
+    """RFC 5424 message, facility local0, no structured data, ASCII body."""
+    pri = FACILITY_LOCAL0 * 8 + severity
+    host = "".join(c for c in station_id if 33 <= ord(c) <= 126)[:255] or "-"
+    msg = f"<{pri}>1 {format_utc(utc_now())} {host} usb-scan {os.getpid()} {msgid} - {body}"
     return msg.encode("ascii", "replace")
+
+
+def format_rfc5424(alert: dict[str, Any], body: str) -> bytes:
+    return rfc5424(alert["station_id"], _SYSLOG_SEVERITY.get(alert["verdict"], 4), "ALERT", body)
 
 
 def frame_octet_counting(msg: bytes) -> bytes:
@@ -160,8 +162,7 @@ class Channel(Protocol):
 class WebhookChannel:
     name = "webhook"
 
-    def __init__(self, cfg, token: str | None, *, transport: httpx.AsyncBaseTransport | None = None,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+    def __init__(self, cfg, token: str | None, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.cfg = cfg
         headers = {"Content-Type": "application/json", "User-Agent": f"usb-scan-station/{PRODUCT_VERSION}"}
         if token:
@@ -171,24 +172,15 @@ class WebhookChannel:
         kwargs: dict[str, Any] = {"transport": transport} if transport is not None else {"verify": tls_context(cfg.ca_file)}
         self._http = httpx.AsyncClient(headers=headers, timeout=float(cfg.timeout_seconds), follow_redirects=False,
                                        **kwargs)
-        self.sleep = sleep
 
     def __repr__(self) -> str:
         return "WebhookChannel(<token hidden>)"
 
-    async def _post(self, body: bytes) -> None:
-        resp = await self._http.post(self.cfg.url, content=body)
-        if not 200 <= resp.status_code < 300:
-            raise RuntimeError(f"http_{resp.status_code}")
-
     async def send(self, alert: dict[str, Any]) -> None:
         body = json.dumps(alert, ensure_ascii=True, separators=(",", ":")).encode()
-        try:
-            await self._post(body)
-        except (httpx.HTTPError, RuntimeError) as exc:
-            log.warning("webhook delivery failed (%s); retrying once", _err(exc))
-            await self.sleep(self.cfg.retry_delay_seconds)
-            await self._post(body)
+        resp = await self._http.post(self.cfg.url, content=body)
+        if not 200 <= resp.status_code < 300:          # 2xx is the acknowledgement
+            raise RuntimeError(f"http_{resp.status_code}")
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -272,89 +264,72 @@ def _err(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-# --- dispatcher --------------------------------------------------------------------------------
+# --- alerts from stored events ------------------------------------------------------------
 
-class AlertDispatcher:
-    def __init__(self, cfg: AlertsConfig, channels: list[Channel], publish: Publish,
-                 pseudo: Pseudonymizer, unavailable: list[str] | None = None) -> None:
-        self.cfg = cfg
-        self.channels = channels
-        self.publish = publish
-        self.pseudo = pseudo
-        self.unavailable = unavailable or []          # configured channels that could not be built
-        self._tasks: set[asyncio.Task] = set()
-
-    @property
-    def active(self) -> bool:
-        return bool(self.channels)
-
-    def wants(self, verdict: Verdict) -> bool:
-        return self.active and verdict in self.cfg.verdicts
-
-    def on_result(self, result: ScanResult, device: dict[str, Any]) -> None:
-        if self.wants(result.verdict):
-            self._spawn(verdict_alert(result, device, self.pseudo))
-
-    def on_not_ready(self, station_id: str, failures: list[str]) -> None:
-        if self.active and self.cfg.not_ready:
-            self._spawn(health_alert(station_id, failures))
-
-    def _spawn(self, alert: dict[str, Any]) -> None:
-        task = asyncio.create_task(self.send(alert), name="alert-dispatch")
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def send(self, alert: dict[str, Any]) -> list[tuple[str, str]]:
-        outcomes = await asyncio.gather(*(ch.send(alert) for ch in self.channels), return_exceptions=True)
-        results = []
-        for ch, out in zip(self.channels, outcomes):
-            status = "delivered" if out is None else f"failed:{_err(out)}"
-            if out is not None:
-                log.error("alert channel %s failed: %s", ch.name, _err(out))
-            results.append((ch.name, status))
-            try:
-                await self.publish(ScanEvent(EventType.ALERT_DELIVERY, alert.get("scan_id"), {
-                    "channel": ch.name, "status": status, "alert_kind": alert["kind"], "verdict": alert["verdict"]}))
-            except Exception as exc:              # recording must not break other channels
-                log.error("alert delivery event not recorded: %s", type(exc).__name__)
-        return results
-
-    async def drain(self, timeout: float = 30.0) -> None:
-        if self._tasks:
-            await asyncio.wait(set(self._tasks), timeout=timeout)
-
-    async def aclose(self) -> None:
-        await self.drain()
-        for ch in self.channels:
-            close = getattr(ch, "aclose", None)
-            if close is not None:
-                await close()
+ALERT_PREFIX = "alert:"
 
 
-def build_dispatcher(cfg: Config, publish: Publish, resolve: Callable[[str], bytes]) -> AlertDispatcher:
-    """Create the configured channels. A channel whose secret cannot be resolved is left out
-    and reported (health warning ``alert_channel_unavailable``)."""
+def tamper_alert(station_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {"schema_version": "1", "kind": "tamper", "station_id": station_id, "scan_id": None,
+            "timestamp_utc": format_utc(utc_now()), "verdict": "TAMPER",
+            "reason_codes": [f"{payload.get('reason', 'unknown')}@{payload.get('first_bad_seq')}"]}
+
+
+def alert_from_event(event: Any, pseudo: Pseudonymizer) -> dict[str, Any]:
+    """Build the alert document for a stored VERDICT / HEALTH_GATE_FAILED / TAMPER_DETECTED event."""
+    p = event.payload
+    if event.event_type == EventType.VERDICT.value:
+        alert = verdict_alert(ScanResult.from_dict(p), p.get("device") or {}, pseudo)
+    elif event.event_type == EventType.HEALTH_GATE_FAILED.value:
+        alert = health_alert(event.station_id, [str(f) for f in p.get("failures", [])])
+    elif event.event_type == EventType.TAMPER_DETECTED.value:
+        alert = tamper_alert(event.station_id, p)
+    else:
+        raise ValueError(f"no alert for {event.event_type}")
+    alert["event_seq"] = event.seq                   # receivers deduplicate on (station_id, event_seq)
+    alert["event_id"] = event.event_id
+    return alert
+
+
+def wants_alert(cfg: AlertsConfig, event_type: EventType, payload: dict[str, Any]) -> bool:
+    if event_type is EventType.VERDICT:
+        return payload.get("verdict") in {v.value for v in cfg.verdicts}
+    if event_type is EventType.HEALTH_GATE_FAILED:
+        return cfg.not_ready
+    return event_type is EventType.TAMPER_DETECTED     # always (spec §3.7 default alert set)
+
+
+def enabled_alert_channels(cfg: AlertsConfig) -> list[str]:
+    return [ALERT_PREFIX + name for name in ("webhook", "email", "syslog") if getattr(cfg, name).enabled]
+
+
+def build_alert_channels(cfg: Config, resolve: Callable[[str], bytes]) -> tuple[dict[str, Channel], list[str]]:
+    """Channels keyed by queue name. A channel whose secret cannot be resolved is reported in
+    the second list; its queue keeps the alerts until the service is restarted with a fix."""
     a = cfg.alerts
-    channels: list[Channel] = []
+    channels: dict[str, Channel] = {}
     unavailable: list[str] = []
 
     def secret(ref: str) -> str | None:
         return resolve(ref).decode("utf-8").strip() if ref else None
 
+    builders: list[tuple[str, Callable[[], Channel]]] = []
     if a.webhook.enabled:
-        try:
-            channels.append(WebhookChannel(a.webhook, secret(a.webhook.token_ref)))
-        except Exception as exc:
-            log.error("webhook alert channel unavailable: %s", type(exc).__name__)
-            unavailable.append("webhook")
+        builders.append(("webhook", lambda: WebhookChannel(a.webhook, secret(a.webhook.token_ref))))
     if a.email.enabled:
-        try:
-            channels.append(EmailChannel(a.email, secret(a.email.password_ref)))
-        except Exception as exc:
-            log.error("e-mail alert channel unavailable: %s", type(exc).__name__)
-            unavailable.append("email")
+        builders.append(("email", lambda: EmailChannel(a.email, secret(a.email.password_ref))))
     if a.syslog.enabled:
-        channels.append(SyslogChannel(a.syslog))
+        builders.append(("syslog", lambda: SyslogChannel(a.syslog)))
+    for name, build in builders:
+        try:
+            channels[ALERT_PREFIX + name] = build()
+        except Exception as exc:
+            log.error("%s alert channel unavailable: %s", name, type(exc).__name__)
+            unavailable.append(ALERT_PREFIX + name)
+    return channels, unavailable
+
+
+def build_pseudonymizer(cfg: Config, resolve: Callable[[str], bytes]) -> Pseudonymizer:
     key = None
     if cfg.logging.filename_privacy is FilenamePrivacy.HASH and cfg.logging.pseudonymization_key_ref:
         try:
@@ -362,4 +337,4 @@ def build_dispatcher(cfg: Config, publish: Publish, resolve: Callable[[str], byt
         except Exception as exc:
             log.error("pseudonymisation key unavailable (%s): file names and serials are omitted",
                       type(exc).__name__)
-    return AlertDispatcher(a, channels, publish, Pseudonymizer(cfg.logging.filename_privacy, key), unavailable)
+    return Pseudonymizer(cfg.logging.filename_privacy, key)

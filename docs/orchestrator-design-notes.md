@@ -17,9 +17,10 @@
 5. **Verdict precedence:** THREAT > ERROR > INCOMPLETE > SUSPICIOUS > CLEAN.
 6. **No file names on the public channel.** Progress events carry counters only; the
    GUI verdict payload has signatures and counts but no paths. Paths and SHA-256 are in
-   the committed record only (privacy handling: Phase 8).
-7. **Interim durable sink.** `JsonlEventSink` (fsync per event) until the events service
-   exists (Phase 8). The verdict is on disk before ejection starts.
+   the committed record only; the events service pseudonymises them before forwarding.
+7. **Durable sink.** `EventClient` (events service, synchronous=FULL, with an fsync'ed local
+   spool when the service is unreachable — see events-design-notes.md). `JsonlEventSink`
+   remains for development and tests. The verdict is durable before ejection starts.
 8. **Crash recovery.** An `active_scan.json` marker turns a crash/power loss into a
    `scan_interrupted` event with `safe_to_remove=false` and a broker `release` on restart.
 
@@ -98,13 +99,12 @@ partitions are never excluded. Partition type comes from libblkid `PART_ENTRY_TY
   admin step-up, warnings, a secure destination and an audited flow — not built yet).
 - The quarantine LUKS2 volume, its key handling and unlock at boot are Phase 10 work.
 
-### Alerting (`src/orchestrator/alerting.py`)
+### Alerting (moved to `src/events/alerting.py` in Phase 8 — see events-design-notes.md)
 - Verdict alerts after commit (`alerts.verdicts`, default THREAT/SUSPICIOUS/INCOMPLETE/
   ERROR/REJECTED); `alerts.not_ready` alerts when a health gate starts failing.
-- Channels are independent (`gather(..., return_exceptions=True)`); each outcome is an
-  `alert_delivery` event with an error class only (no exception text, URLs or secrets).
-- Webhook: https only, no redirects, optional bearer token from a secret ref, one retry
-  after `retry_delay_seconds`. E-mail: STARTTLS is mandatory in `starttls` mode
+- Channels are independent queues; each outcome is an `alert_delivery` event with an error
+  class only (no exception text, URLs or secrets).
+- Webhook: https only, no redirects, optional bearer token from a secret ref. E-mail: STARTTLS is mandatory in `starttls` mode
   (`SMTPNotSupportedError` if not offered) or implicit TLS; header values cannot contain
   CR/LF (validated + `EmailMessage` refuses them). Syslog: TLS only, RFC 5425 octet-counting
   framing, RFC 5424 header (facility local0) with a JSON or CEF body.
@@ -112,8 +112,8 @@ partitions are never excluded. Partition type comes from libblkid `PART_ENTRY_TY
   trust store, delivered only when the CA is configured via `ca_file`.
 - Privacy: paths and device serials follow `logging.filename_privacy`; `hash` uses
   HMAC-SHA256 with `pseudonymization_key_ref` and omits the value if no key is available.
-- Interim delivery is best effort (in-memory task). The durable, acknowledged queue with
-  retries and ordering (spec §3.2 step 12) is implemented by the events service in Phase 8.
+- Since Phase 8 alerts are derived from committed events by the events service and sent
+  through its durable queues; the one-retry webhook behaviour was replaced by queue backoff.
 
 ## Still to validate on the Pi
 - vfat/exfat/ntfs3 mounts (this CI kernel only supports ext4).

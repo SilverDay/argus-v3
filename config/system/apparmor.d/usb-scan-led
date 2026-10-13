@@ -1,0 +1,29 @@
+# USB Scan Station AppArmor profile: status LED (usbscan-led)
+# Owner decision (Phase 11): shipped in COMPLAIN mode. Attached by name through the unit's
+# AppArmorProfile= (all services share the Python interpreter, so path attachment cannot
+# separate them). Tune with aa-logprof against the acceptance tests on the Pi, then promote:
+#   sudo /opt/usb-scan/scripts/harden.sh --apparmor-enforce
+abi <abi/4.0>,
+include <tunables/global>
+
+profile usb-scan-led flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/python>
+
+  /opt/usb-scan/** r,
+  /opt/usb-scan/.venv/bin/python* ix,
+  /usr/bin/python3* ix,
+  /usr/lib/python3*/** mr,
+  /etc/usb-scan/scan_station.yaml r,
+  @{PROC}/@{pid}/{stat,status,mountinfo,fd/} r,
+  /run/systemd/notify w,
+  /run/usb-scan/state.sock rw,
+  /dev/gpiochip* rw,
+  /sys/bus/gpio/** r,
+  /sys/devices/** r,
+  network unix stream,
+  deny network inet,
+  deny network inet6,
+  deny /etc/usb-scan/secrets/** rwx,
+  deny /run/usb-scan/mounts/** rwx,
+}

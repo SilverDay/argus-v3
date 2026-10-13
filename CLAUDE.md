@@ -99,6 +99,7 @@ Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design
 docs/yara-worker-design-notes.md, docs/gui-design-notes.md, docs/led-design-notes.md,
 docs/events-design-notes.md, docs/web-design-notes.md
 Deployment: docs/deployment.md (scripts/first-boot-setup.sh, systemd/, config/system/)
+Hardening: docs/hardening-checklist.md (scripts/harden.sh, scripts/maintenance-mode.sh, src/host/)
 
 ## Commit Style
 

@@ -94,6 +94,7 @@ def make_cfg(tmp_path, *, oidc: bool = True, **overrides: Any):
         "station": {"data_dir": str(tmp_path)},
         "events": {"socket_path": str(tmp_path / "events.sock")},
         "admin_web": {"enabled": True, "public_url": PUBLIC, "trusted_proxies": 0, "state_dir": str(tmp_path / "web")},
+        "host": {"management_networks": ["10.0.0.0/8", "192.0.2.0/24", "127.0.0.0/8"]},
         "auth": {"web": {"oidc_enabled": oidc, "require_mfa": True, "local_fallback_allowed": not oidc,
                          "oidc": {"issuer": ISSUER, "client_id": CLIENT_ID,
                                   "roles": {"admin": ["scan-admins"], "operator": ["scan-ops"],

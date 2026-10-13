@@ -258,3 +258,14 @@ health:
   min_free_disk_mb: 512
   max_cpu_temp_c: 80
   min_valid_year: 2026
+
+host:                                   # host hardening, applied by scripts/harden.sh (spec §8.1)
+  ssh_enabled: false                    # spec: SSH off by default
+  ssh_allow_users: []                   # named administrators, public-key login only
+  management_networks: []               # CIDRs allowed to reach SSH / the admin reverse proxy
+  admin_proxy_port: 443
+  wifi_enabled: false                   # false -> dtoverlay=disable-wifi
+  bluetooth_enabled: false              # false -> dtoverlay=disable-bt
+  log_dropped_packets: true
+  data_partition_label: USBSCAN-DATA    # persistent ext4 partition (spec §5.3)
+  data_mountpoint: /data

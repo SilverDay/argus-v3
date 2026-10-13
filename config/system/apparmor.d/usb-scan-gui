@@ -1,0 +1,39 @@
+# USB Scan Station AppArmor profile: kiosk GUI (usbscan-gui under cage)
+# Owner decision (Phase 11): shipped in COMPLAIN mode. Attached by name through the unit's
+# AppArmorProfile= (all services share the Python interpreter, so path attachment cannot
+# separate them). Tune with aa-logprof against the acceptance tests on the Pi, then promote:
+#   sudo /opt/usb-scan/scripts/harden.sh --apparmor-enforce
+abi <abi/4.0>,
+include <tunables/global>
+
+profile usb-scan-gui flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/python>
+
+  /opt/usb-scan/** r,
+  /opt/usb-scan/.venv/bin/python* ix,
+  /usr/bin/python3* ix,
+  /usr/lib/python3*/** mr,
+  /etc/usb-scan/scan_station.yaml r,
+  @{PROC}/@{pid}/{stat,status,mountinfo,fd/} r,
+  /run/systemd/notify w,
+  include <abstractions/fonts>
+  include <abstractions/mesa>
+  include <abstractions/dri-common>
+  include <abstractions/wayland>
+  /usr/bin/cage ix,
+  /var/lib/usb-scan/gui/ rw,
+  /var/lib/usb-scan/gui/** rwk,
+  /run/usb-scan/state.sock rw,
+  /dev/dri/** rw,
+  /dev/input/** r,
+  /dev/tty[0-9]* rw,
+  /sys/** r,
+  /run/user/*/** rwk,
+  network unix stream,
+  network netlink raw,
+  deny network inet,
+  deny network inet6,
+  deny /etc/usb-scan/secrets/** rwx,
+  deny /run/usb-scan/mounts/** rwx,
+}

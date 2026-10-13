@@ -9,6 +9,7 @@ The config holds no secrets: credential fields are secret references (see
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import re
 import types
 import typing
@@ -447,6 +448,20 @@ class EventsConfig:
 
 
 @dataclass(frozen=True)
+class HostConfig:
+    """Host hardening (spec §8.1), rendered by ``python -m src.host.render`` / scripts/harden.sh."""
+    ssh_enabled: bool = False                     # spec §8.1: SSH off by default
+    ssh_allow_users: tuple[str, ...] = ()         # named administrators (key auth only)
+    management_networks: tuple[str, ...] = ()     # CIDRs allowed to reach SSH / the admin proxy
+    admin_proxy_port: int = field(default=443, metadata=_range(1, 65535))
+    wifi_enabled: bool = False
+    bluetooth_enabled: bool = False
+    log_dropped_packets: bool = True
+    data_partition_label: str = "USBSCAN-DATA"    # persistent ext4 partition (spec §5.3)
+    data_mountpoint: str = "/data"
+
+
+@dataclass(frozen=True)
 class HealthConfig:
     min_free_disk_mb: int = field(default=512, metadata=_range(1, 1_000_000))
     max_cpu_temp_c: int = field(default=80, metadata=_range(40, 100))
@@ -475,6 +490,7 @@ class Config:
     logging: LoggingConfig = LoggingConfig()
     events: EventsConfig = EventsConfig()
     health: HealthConfig = HealthConfig()
+    host: HostConfig = HostConfig()
 
     @property
     def restricted_extension_scope(self) -> bool:
@@ -670,6 +686,7 @@ def validate(cfg: Config) -> None:
     if cfg.logging.level.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         errors.append("logging.level must be DEBUG/INFO/WARNING/ERROR/CRITICAL")
     _validate_events(cfg, errors)
+    _validate_host(cfg, errors)
     if cfg.logging.syslog.enabled and not cfg.logging.syslog.host:
         errors.append("logging.syslog.enabled requires logging.syslog.host")
 
@@ -736,6 +753,29 @@ def _validate_events(cfg: Config, errors: list[str]) -> None:
 
 
 _ROLES = ("viewer", "operator", "admin")
+
+
+def _validate_host(cfg: Config, errors: list[str]) -> None:
+    h = cfg.host
+    nets = []
+    for net in h.management_networks:
+        try:
+            nets.append(ipaddress.ip_network(net, strict=True))
+        except ValueError:
+            errors.append(f"host.management_networks: invalid CIDR {net!r}")
+    if any(n.prefixlen == 0 for n in nets):
+        errors.append("host.management_networks: 0.0.0.0/0 or ::/0 is not a management network")
+    for user in h.ssh_allow_users:
+        if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user) or user == "root":
+            errors.append(f"host.ssh_allow_users: invalid or forbidden user {user!r}")
+    if h.ssh_enabled and (not h.ssh_allow_users or not nets):
+        errors.append("host.ssh_enabled requires ssh_allow_users and management_networks (spec §8.1)")
+    if cfg.admin_web.enabled and not nets:
+        errors.append("admin_web.enabled requires host.management_networks (spec §9.1 allowlisted networks)")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,16}", h.data_partition_label):
+        errors.append("host.data_partition_label: 1-16 chars [A-Za-z0-9_-]")
+    if not _abs_path_ok(h.data_mountpoint) or h.data_mountpoint.rstrip("/") in ("", "/var", "/etc", "/usr"):
+        errors.append("host.data_mountpoint: absolute dedicated path required")
 
 
 def _validate_web(cfg: Config, errors: list[str]) -> None:

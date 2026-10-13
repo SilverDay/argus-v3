@@ -1,0 +1,32 @@
+# USB Scan Station AppArmor profile: YARA worker (yarascan)
+# Owner decision (Phase 11): shipped in COMPLAIN mode. Attached by name through the unit's
+# AppArmorProfile= (all services share the Python interpreter, so path attachment cannot
+# separate them). Tune with aa-logprof against the acceptance tests on the Pi, then promote:
+#   sudo /opt/usb-scan/scripts/harden.sh --apparmor-enforce
+abi <abi/4.0>,
+include <tunables/global>
+
+profile usb-scan-yara flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/python>
+
+  /opt/usb-scan/** r,
+  /opt/usb-scan/.venv/bin/python* ix,
+  /usr/bin/python3* ix,
+  /usr/lib/python3*/** mr,
+  /etc/usb-scan/scan_station.yaml r,
+  @{PROC}/@{pid}/{stat,status,mountinfo,fd/} r,
+  /run/systemd/notify w,
+  /etc/usb-scan/yara-rules.pub r,
+  /usr/bin/minisign ix,
+  /var/lib/usb-scan/rules/** r,
+  /var/lib/usb-scan/yara-state/ rw,
+  /var/lib/usb-scan/yara-state/** rwk,
+  /run/usb-scan/ r,
+  /run/usb-scan/yara.sock rw,
+  /tmp/** rwk,
+  network unix stream,
+  deny network inet,
+  deny network inet6,
+  deny /run/usb-scan/mounts/** rwx,
+}

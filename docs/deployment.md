@@ -128,6 +128,33 @@ sudo /opt/usb-scan/scripts/setup-quarantine.sh /dev/sdX --yes-erase-all-data
 | Lost quarantine keyfile | `cryptsetup open /dev/sdX usbscan-quarantine` with the recovery passphrase, then `cryptsetup luksAddKey` a new keyfile |
 | USB keyboard needed on site | there is none by design; use SSH or the serial console, or stop `usbguard` deliberately and audit it |
 
+## 7a. Hardening and read-only root (Phase 11)
+
+1. **Prepare the persistent data partition when imaging the card.**
+   - Do this on a Linux workstation after writing the image and before the first boot.
+   - Create an ext4 partition in the free space after the root partition and label it
+     `USBSCAN-DATA` (or `host.data_partition_label`), e.g.
+     `sudo parted /dev/sdX -- mkpart primary ext4 -16GiB 100%` and
+     `sudo mkfs.ext4 -L USBSCAN-DATA /dev/sdX3`.
+   - `harden.sh` never repartitions.
+   - *Pi validation:* how the trixie first-boot root expansion treats a partition placed
+     after root was not verifiable offline. Check that the partition is intact after the
+     first boot.
+2. **Set `host.*`** in `scan_station.yaml`: management networks, SSH users (SSH stays off
+   unless `host.ssh_enabled`), radios.
+3. **Run `sudo /opt/usb-scan/scripts/harden.sh`, then reboot.** It applies:
+   - firewall: default deny in and out, per-service egress;
+   - sysctl, SSH policy, disabled services and radios, swap off;
+   - AppArmor profiles in complain mode;
+   - data bind mounts;
+   - `overlayroot=tmpfs:recurse=0` and a read-only `/boot/firmware`.
+4. **OS updates go through `scripts/maintenance-mode.sh enter` → update → `exit`, on UPS power
+   only.** The orchestrator does not run while the root is writable.
+5. **After tuning on the Pi** (`aa-logprof` during the acceptance tests), promote the profiles
+   with `harden.sh --apparmor-enforce`.
+
+The item-by-item status is in docs/hardening-checklist.md.
+
 ## 8. Plan items handled differently
 
 | Plan Phase 10 | Implemented | Reason |

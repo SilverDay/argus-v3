@@ -135,6 +135,17 @@ class OrchestratorConfig:
 
 
 @dataclass(frozen=True)
+class GuiConfig:
+    long_press_ms: int = field(default=3000, metadata=_range(500, 10_000))      # spec §4.3
+    ambient_after_seconds: int = field(default=300, metadata=_range(30, 3600))  # spec §4.4
+    language: str = "en"
+    translations_dir: str = "/opt/usb-scan/translations"
+    hide_cursor: bool = True
+    show_signature_names: bool = True    # detection names on the public result screen
+    fullscreen: bool = True
+
+
+@dataclass(frozen=True)
 class ScanConfig:
     global_timeout_seconds: int = field(default=3600, metadata=_range(60, 86_400))
     max_files: int = field(default=500_000, metadata=_range(1, 100_000_000))
@@ -278,6 +289,7 @@ class Config:
     device: DeviceConfig = DeviceConfig()
     broker: BrokerConfig = BrokerConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
+    gui: GuiConfig = GuiConfig()
     scan: ScanConfig = ScanConfig()
     clamav: ClamAVConfig = ClamAVConfig()
     yara: YaraConfig = YaraConfig()
@@ -381,6 +393,9 @@ def validate(cfg: Config) -> None:
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", cfg.station.station_id):
         errors.append("station.station_id: must be 1-64 chars [A-Za-z0-9_.-]")
+
+    if not re.fullmatch(r"[a-z]{2}(_[A-Z]{2})?", cfg.gui.language):
+        errors.append("gui.language: expected a locale such as 'en' or 'de_DE'")
 
     for ptype in cfg.device.excludable_partition_types:
         if not re.fullmatch(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|0x[0-9a-f]{1,2}", ptype):

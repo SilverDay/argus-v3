@@ -97,8 +97,14 @@ class Orchestrator:
         await self.publish(ScanEvent(EventType.STATE_CHANGED, scan_id, dict(self.state_payload)))
 
     def snapshot(self, creds: PeerCredentials) -> list[ScanEvent]:
+        """Current state for a (re)connecting client; includes the verdict while it is shown."""
         scan_id = self.active.scan_id if self.active else None
-        return [ScanEvent(EventType.STATE_CHANGED, scan_id, dict(self.state_payload or {"state": self.state.value}))]
+        events = []
+        if self.active is not None and self.active.result is not None:
+            events.append(ScanEvent(EventType.VERDICT, scan_id, self.gui_verdict_payload(self.active.result)))
+        events.append(ScanEvent(EventType.STATE_CHANGED, scan_id,
+                                dict(self.state_payload or {"state": self.state.value})))
+        return events
 
     @staticmethod
     def gui_verdict_payload(result: ScanResult) -> dict[str, Any]:

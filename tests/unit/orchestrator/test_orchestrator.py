@@ -573,3 +573,13 @@ async def test_yara_budget_exceeded_incomplete(harness):
     v = verdicts(events)[0]
     assert v["verdict"] == "INCOMPLETE"
     assert "yara_budget_exceeded" in committed(sink)[-1]["reason_codes"]
+
+
+async def test_snapshot_includes_verdict_while_result_shown(harness):
+    """A GUI that (re)connects during RESULT must get the verdict, not only the state."""
+    orch, *_ = harness()
+    await start(orch)
+    await run_scan(orch)
+    events = orch.snapshot(GUI)
+    assert [e.event_type for e in events] == [EventType.VERDICT, EventType.STATE_CHANGED]
+    assert events[0].payload["verdict"] == "CLEAN" and events[1].payload["state"] == "RESULT"

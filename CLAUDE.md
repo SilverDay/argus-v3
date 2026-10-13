@@ -16,7 +16,8 @@ Plan: docs/USB-Scan-Station-Implementation-Plan-v1.5.md
   read-only fds from the orchestrator. Supervisor runs one rlimited child per session and
   SIGKILLs it on budget expiry. Rules: minisign-signed manifest (docs/yara-worker-design-notes.md).
 - `src/gui/` — PySide6 fullscreen kiosk (user: usbscan-gui). Pure display client.
-  Zero scan logic. Subscribes to orchestrator state socket.
+  Zero scan logic. Subscribes to orchestrator state socket; the orchestrator owns state.
+  GUI literals: QCoreApplication.translate("usbscan", ...) — never bare tr("...").
 - `src/led/` — GPIO LED controller (group: gpio). lgpio/rpi-lgpio ONLY (NOT RPi.GPIO).
 - `src/web/` — Flask + HTMX admin UI (user: usbscan-web). OIDC/SSO + MFA for remote
   admin. Local named-account fallback only for isolated networks. No shared PIN for admin.
@@ -90,7 +91,7 @@ docs/USB-Scan-Station-Spec-v1.5.md — authoritative. When in doubt, check the s
 §3.3 verdict semantics · §3.4 coverage metrics · §3.5 operator_hold ·
 §5.4 service privileges · §6.2 config validation · §8.2 USBGuard/broker · §10.1 PIN
 Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md,
-docs/yara-worker-design-notes.md
+docs/yara-worker-design-notes.md, docs/gui-design-notes.md
 
 ## Commit Style
 

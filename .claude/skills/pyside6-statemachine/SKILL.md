@@ -1,38 +1,41 @@
 ---
 name: pyside6-statemachine
 description: >-
-  PySide6 state machine pattern for the kiosk GUI. Use when working on
-  GUI states, transitions, animations, the IPC event loop, or PIN overlay.
-  Note: spec uses PySide6 (preferred), not PyQt6. API is nearly identical.
+  PySide6 kiosk GUI (src/gui): screens per orchestrator state, IPC worker thread,
+  PIN overlay, operator panel, ambient mode, translations. Use when working on GUI
+  states, the IPC event loop, the PIN overlay or GUI texts.
 ---
 
-# PySide6 GUI State Machine
-
-## States (13 total — src/gui/state_machine.py)
-STARTING | NOT_READY | IDLE | VALIDATING | MOUNTING | SCANNING | EVALUATING |
-OPERATOR_HOLD | EJECTING | RESULT | EJECT_FAILED | REJECTED | ERROR
-Defined as QState objects; transitions driven by ScanEvent objects from IPC socket.
+# PySide6 Kiosk GUI (as implemented — see docs/gui-design-notes.md)
 
 ## Rules
-- NEVER call scan logic, broker RPC, or mount operations from GUI code.
-- All state transitions driven by ScanEvent objects received on the IPC state socket.
-- Use QPropertyAnimation for transitions — no blocking calls on the UI thread.
-- IPC socket reader runs in a QThread — emits Qt signals to the main thread only.
+- The GUI is a pure display client. The ORCHESTRATOR owns the state machine; the GUI
+  shows the screen for each STATE_CHANGED (validated against the 13 GUIState values) and
+  renders payloads. Do not re-implement transitions or any scan logic in src/gui/.
+- Outbound messages are only OPERATOR_PIN_SUBMIT, OPERATOR_ACK, LOCKOUT_QUERY.
+- IPC runs in `IpcWorker` (QThread + asyncio IPCClient); events reach the UI thread only
+  through the `event_received` signal. Never block the UI thread.
+- IPC_DISCONNECTED → "Scanning unavailable" screen; never keep a stale result.
+- Never render file paths, device serials or raw payloads. Only the keys each screen reads.
 
-## PIN Overlay (widgets/pin_overlay.py)
-- Digit positions MUST be randomized on every show() call: random.shuffle(digit_list)
-- Render digits as QLabel with text '●' — never display the actual digit
-- Long-press detection: QTimer(3000ms) started on touchDown in the IDLE reserved region
-- Lockout state persisted to events DB; check via IPC before allowing entry attempt
-- Operator functions only: last scan summary, health status, language, operator_hold ack
+## PIN overlay (widgets/pin_overlay.py)
+- `secrets.SystemRandom().shuffle` on EVERY `open()` (AC-S06); dots only; min/max length
+  from cfg.pin; buffer cleared on submit/cancel/hide; PIN verified by the orchestrator only.
+- Long-press area: 96×96 px in IDLE, `gui.long_press_ms` (default 3000).
 
-## operator_hold (OPERATOR_HOLD state)
-- Only available after CLEAN or SUSPICIOUS verdict (never THREAT)
-- Entered when config.operator_hold.enabled=true and scan completes
-- Display: PIN entry required + countdown timer showing remaining hold seconds
-- On timeout: auto-transition to EJECTING (no operator action)
-- On PIN accepted: operator may view result summary and acknowledge → EJECTING
-- Log entry on OPERATOR_HOLD enter and exit (reason: acknowledged | timeout | removed)
+## Operator hold
+- Countdown shows `remaining_s`; the timeout is enforced by the orchestrator.
+- Ack button appears only after a successful PIN while OPERATOR_HOLD is active.
 
-## Touchscreen
-Minimum tap target: 48×48px. Use QTouchEvent, not mouse events.
+## Styling
+- Full-screen colour + icon + text per state/verdict (presentation.py). Screens need
+  `WA_StyledBackground` + `#objectName` selectors, otherwise only labels get the colour.
+- Touch targets ≥ 48 px (keypad 72 px).
+
+## Translations
+- Literals: `QCoreApplication.translate("usbscan", "...")`; table strings:
+  `QT_TRANSLATE_NOOP("usbscan", "...")` rendered with `tr()`. Bare `tr("...")` is NOT
+  extracted with the right context (test guards this). Tooling: scripts/update-translations.sh.
+
+## Testing
+QT_QPA_PLATFORM=offscreen + pytest-qt; scripts/gui_demo.py cycles all states for manual runs.

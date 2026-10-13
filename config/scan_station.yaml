@@ -49,6 +49,15 @@ orchestrator:
   storage_wait_seconds: 10             # authorized USB device without storage -> REJECTED
   thermal_zone_path: /sys/class/thermal/thermal_zone0/temp
 
+gui:
+  long_press_ms: 3000                 # hidden operator area, spec §4.3
+  ambient_after_seconds: 300          # privacy/ambient screen when idle, spec §4.4
+  language: en
+  translations_dir: /opt/usb-scan/translations
+  hide_cursor: true
+  show_signature_names: true          # detection names on the public result screen
+  fullscreen: true
+
 scan:
   global_timeout_seconds: 3600
   max_files: 500000

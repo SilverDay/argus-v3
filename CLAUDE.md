@@ -42,7 +42,8 @@ httpx 0.27+. USBGuard (system service). No udisks2. No dasbus. No RPi.GPIO.
   print a PIN at any verbosity level. PIN length: minimum 6 digits (spec §10.1).
 - **No secrets or credential hashes in scan_station.yaml.** Secret fields are
   references (`file:`, `credential:`, `env:`) resolved by `src/shared/secret_refs.py`.
-- **USB mounts are always read-only** (ro, noexec, nosuid, nodev + FS-specific safe opts).
+- **USB mounts are always read-only** (ro, noexec, nosuid, nodev, nosymfollow + FS-specific
+  opts; block device set read-only first). See docs/broker-design-notes.md.
 - **All external HTTP calls use TLS with certificate verification.** httpx, not
   requests. Never disable verification.
 - **Trixie venv:** MUST use `--system-site-packages` for lgpio. Do NOT pip install lgpio.
@@ -65,7 +66,7 @@ yara_complete (if enabled), vt_complete (if enabled)
 
 ## IPC Sockets
 
-- Broker RPC:         /run/usb-scan/broker.sock     (root-owned, 0600)
+- Broker RPC:         /run/usb-scan/broker.sock     (0660 root:usbscan, SO_PEERCRED + HMAC)
 - Orchestrator → GUI: /run/usb-scan/state.sock      (0660 usbscan:usbscan-gui)
 - Orchestrator → LED: /run/usb-scan/led.sock        (0660 usbscan:gpio)
 - YARA worker:        /run/usb-scan/yara.sock       (0660 usbscan:yarascan)

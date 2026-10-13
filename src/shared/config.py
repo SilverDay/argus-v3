@@ -56,6 +56,12 @@ class FilenamePrivacy(str, Enum):
     OMIT = "omit"
 
 
+class NtfsDriver(str, Enum):
+    """Kernel ntfs3 vs FUSE ntfs-3g (spec FR-USB-05: validate before deployment)."""
+    NTFS3 = "ntfs3"
+    NTFS_3G = "ntfs-3g"
+
+
 class SyslogTransport(str, Enum):
     UDP = "udp"
     TCP = "tcp"
@@ -87,6 +93,20 @@ class DeviceConfig:
     internal_device_sysfs_prefixes: tuple[str, ...] = ()
     require_full_coverage: bool = True
     insertion_debounce_ms: int = field(default=500, metadata=_range(0, 10_000))
+
+
+@dataclass(frozen=True)
+class BrokerConfig:
+    socket_path: str = "/run/usb-scan/broker.sock"
+    client_user: str = "usbscan"
+    socket_group: str = "usbscan"
+    read_group: str = "usbscan-read"
+    mounts_dir: str = "/run/usb-scan/mounts"
+    audit_log: str = "/var/log/usb-scan/broker-audit.log"
+    hmac_key_ref: str = field(default="file:/etc/usb-scan/secrets/broker-hmac.key", metadata=_secret_ref())
+    ntfs_driver: NtfsDriver = NtfsDriver.NTFS3
+    command_timeout_seconds: int = field(default=30, metadata=_range(5, 300))
+    max_clock_skew_seconds: int = field(default=30, metadata=_range(1, 300))
 
 
 @dataclass(frozen=True)
@@ -219,6 +239,7 @@ class Config:
     schema_version: int = field(default=1, metadata=_range(1, 1))
     station: StationConfig = StationConfig()
     device: DeviceConfig = DeviceConfig()
+    broker: BrokerConfig = BrokerConfig()
     scan: ScanConfig = ScanConfig()
     clamav: ClamAVConfig = ClamAVConfig()
     yara: YaraConfig = YaraConfig()
@@ -322,6 +343,16 @@ def validate(cfg: Config) -> None:
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", cfg.station.station_id):
         errors.append("station.station_id: must be 1-64 chars [A-Za-z0-9_.-]")
+
+    for name in ("socket_path", "mounts_dir", "audit_log"):
+        value = getattr(cfg.broker, name)
+        if not value.startswith("/") or ".." in value.split("/"):
+            errors.append(f"broker.{name}: must be an absolute path without '..'")
+    if not cfg.broker.hmac_key_ref:
+        errors.append("broker.hmac_key_ref is required")
+    for name in ("client_user", "socket_group", "read_group"):
+        if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", getattr(cfg.broker, name)):
+            errors.append(f"broker.{name}: invalid user/group name")
 
     if cfg.clamav.role is not EngineRole.MANDATORY:
         errors.append("clamav.role: ClamAV is the mandatory engine and cannot be advisory")

@@ -72,7 +72,7 @@ def decode_event(line: bytes) -> ScanEvent:
         raise IPCError(f"invalid event: {exc}") from exc
 
 
-def _remove_stale_socket(path: str) -> None:
+def remove_stale_socket(path: str) -> None:
     try:
         st = os.lstat(path)
     except FileNotFoundError:
@@ -119,7 +119,7 @@ class IPCServer:
         return len(self._clients)
 
     async def start(self) -> None:
-        _remove_stale_socket(self.path)
+        remove_stale_socket(self.path)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         old_umask = os.umask(0o177)  # socket created as 0600 at most, then widened
         try:
@@ -141,7 +141,7 @@ class IPCServer:
             await self._server.wait_closed()
             self._server = None
         with contextlib.suppress(FileNotFoundError):
-            _remove_stale_socket(self.path)
+            remove_stale_socket(self.path)
 
     def _authorized(self, creds: PeerCredentials) -> bool:
         if creds.uid not in self._allowed_uids:

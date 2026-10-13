@@ -1,0 +1,58 @@
+# Privileged device broker (spec §5.4). DRAFT — validate on the Pi in Phase 10.
+#
+# IMPORTANT: this unit must NOT get its own mount namespace. Options such as
+# ProtectSystem=, ProtectHome=, PrivateTmp=, PrivateDevices=, ReadOnlyPaths= or
+# PrivateMounts= disconnect mount propagation from the unit to the host
+# (systemd.exec(5)), so scan mounts would be invisible to clamd and the YARA
+# worker. Hardening here therefore relies on capabilities, syscall/address-family
+# filters and the cgroup device policy, none of which create a mount namespace.
+
+[Unit]
+Description=USB Scan Station device broker
+After=systemd-udevd.service
+Before=usb-scan-orchestrator.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+Group=root
+ExecStart=/opt/usb-scan/.venv/bin/python -m src.broker --config /etc/usb-scan/scan_station.yaml
+WorkingDirectory=/opt/usb-scan
+Restart=always
+RestartSec=3
+WatchdogSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+RuntimeDirectory=usb-scan
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0755
+LogsDirectory=usb-scan
+LogsDirectoryMode=0750
+
+# CAP_SETPCAP is needed only for the in-process bounding-set drop at startup;
+# after the socket is bound the process keeps CAP_SYS_ADMIN and CAP_CHOWN only.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_SETPCAP
+AmbientCapabilities=
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@debug @cpu-emulation @obsolete @raw-io @reboot @swap @module @clock
+UMask=0077
+DevicePolicy=closed
+DeviceAllow=block-sd r
+DeviceAllow=block-loop r
+DeviceAllow=/dev/fuse rw
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

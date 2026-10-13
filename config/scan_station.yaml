@@ -21,6 +21,18 @@ device:
   require_full_coverage: true           # uninspected partition -> INCOMPLETE
   insertion_debounce_ms: 500
 
+broker:
+  socket_path: /run/usb-scan/broker.sock   # 0660 root:usbscan (connect needs group write)
+  client_user: usbscan                     # only this uid may connect (SO_PEERCRED)
+  socket_group: usbscan
+  read_group: usbscan-read                 # gid owning mount dirs; scanner users are members
+  mounts_dir: /run/usb-scan/mounts
+  audit_log: /var/log/usb-scan/broker-audit.log
+  hmac_key_ref: file:/etc/usb-scan/secrets/broker-hmac.key
+  ntfs_driver: ntfs3                       # ntfs3 | ntfs-3g — validate on target kernel (FR-USB-05)
+  command_timeout_seconds: 30
+  max_clock_skew_seconds: 30
+
 scan:
   global_timeout_seconds: 3600
   max_files: 500000

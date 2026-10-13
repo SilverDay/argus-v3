@@ -13,7 +13,8 @@ from typing import Any
 
 MAX_LINE_BYTES = 1024 * 1024          # a verdict carries the full ScanResult
 WRITE_OPS = frozenset({"append"})
-READ_OPS = frozenset({"ping", "status", "last_verdict", "recent"})
+READ_OPS = frozenset({"ping", "status", "last_verdict", "last_health", "recent", "page", "scans", "scan",
+                      "stats"})
 
 E_BAD_REQUEST = "bad_request"
 E_FORBIDDEN = "forbidden"

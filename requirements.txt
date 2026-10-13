@@ -9,9 +9,11 @@ yara-python>=4.5.4
 # System packages (apt, not pip): clamav-daemon, minisign (YARA ruleset signatures),
 # util-linux (mount/blkid/blockdev), python3-lgpio.
 
-# Web admin
+# Web admin (sessions are server-side in the app's own SQLite store; no Flask-Session).
+# OIDC uses httpx + joserfc directly: authlib's Flask client depends on `requests`.
 Flask>=3.1.3
-Flask-Session>=0.8.0
+joserfc>=1.7.5
+gunicorn>=26.2.0
 
 # Auth
 bcrypt>=5.0.0

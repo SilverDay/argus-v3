@@ -121,6 +121,8 @@ class EventType(str, Enum):
     AUDIT_CHECKPOINT = "audit_checkpoint"        # HMAC over the chain head (events service)
     TAMPER_DETECTED = "tamper_detected"          # audit chain verification failed
     TAMPER_ACKNOWLEDGED = "tamper_acknowledged"  # administrator re-anchored after investigation
+    WEB_AUTH = "web_auth"                        # admin web login/logout/session rejection
+    WEB_ACCESS = "web_access"                    # admin web data access (who, role, what)
     # Clients -> orchestrator (restricted operator RPC)
     OPERATOR_PIN_SUBMIT = "operator_pin_submit"
     OPERATOR_ACK = "operator_ack"

@@ -12,8 +12,9 @@ Type=notify
 NotifyAccess=main
 User=usbscan-events
 Group=usbscan-events
-# Socket group "usbscan" lets the orchestrator connect (0660 usbscan-events:usbscan).
-SupplementaryGroups=usbscan
+# Dedicated socket group (0660 usbscan-events:usbscan-audit): the orchestrator and the
+# admin web join it; it grants no access to broker.sock or yara.sock (group usbscan).
+SupplementaryGroups=usbscan-audit
 ExecStart=/opt/usb-scan/.venv/bin/python -m src.events --config /etc/usb-scan/scan_station.yaml
 WorkingDirectory=/opt/usb-scan
 Restart=always

@@ -1,0 +1,59 @@
+# Admin web UI (spec §9.1). DRAFT — validate on the Pi in Phase 10.
+# Read-only by owner decision: no privileged actions, no USB/mount/quarantine access.
+# Listens on loopback only; TLS terminates at the reverse proxy (nginx/caddy).
+
+[Unit]
+Description=USB Scan Station admin web UI
+After=usb-scan-events.service
+Wants=usb-scan-events.service
+
+[Service]
+Type=simple
+User=usbscan-web
+Group=usbscan-web
+# events.sock is 0660 usbscan-events:usbscan-audit. Deliberately NOT group usbscan, which
+# would reach broker.sock and yara.sock.
+SupplementaryGroups=usbscan-audit
+Environment=USB_SCAN_CONFIG=/etc/usb-scan/scan_station.yaml
+ExecStart=/opt/usb-scan/.venv/bin/gunicorn --bind 127.0.0.1:8080 --workers 2 --timeout 60 \
+    --forwarded-allow-ips 127.0.0.1 'src.web.wsgi:app'
+WorkingDirectory=/opt/usb-scan
+Restart=on-failure
+RestartSec=5
+# OIDC confidential client: provide the secret as a systemd credential and set
+# auth.web.oidc.client_secret_ref: credential:web_oidc_client_secret
+#LoadCredential=web_oidc_client_secret:/etc/usb-scan/secrets/web_oidc_client_secret
+
+StateDirectory=usb-scan/web
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/run/usb-scan/mounts -/var/lib/usb-scan/quarantine -/var/lib/usb-scan/events -/var/lib/usb-scan/orchestrator
+ReadOnlyPaths=/etc/usb-scan
+# Outbound: the OIDC provider only. Narrow with IPAddressAllow= per site.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @resources
+UMask=0077
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

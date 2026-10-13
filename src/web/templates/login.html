@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Sign in</h1>
+  {% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
+  {% if oidc_enabled %}
+  <form method="post" action="{{ url_for('auth.oidc_start') }}">
+    <input type="hidden" name="csrf_token" value="{{ login_token }}">
+    <button type="submit" class="primary">Sign in with single sign-on</button>
+  </form>
+  {% endif %}
+  {% if local_enabled %}
+  <form method="post" action="{{ url_for('auth.login_local') }}" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ login_token }}">
+    <label>Username <input name="username" required maxlength="64" autocomplete="username"></label>
+    <label>Passphrase <input name="passphrase" type="password" required maxlength="200" autocomplete="current-password"></label>
+    <button type="submit" class="primary">Sign in</button>
+    <p class="muted">Local accounts are for isolated management networks only.</p>
+  </form>
+  {% endif %}
+  {% if not oidc_enabled and not local_enabled %}<p>No sign-in method is configured.</p>{% endif %}
+</section>
+{% endblock %}

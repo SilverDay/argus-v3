@@ -42,7 +42,8 @@ async def run(cfg, key: bytes) -> None:
     except KeyError:
         gid = None
     service = EventsService(cfg, key, resolve_secret, writer_uids=_uids(cfg.events.writer_users),
-                            reader_uids=_uids(cfg.events.reader_users), group_gid=gid)
+                            reader_uids=_uids(cfg.events.reader_users),
+                            web_uids=_uids(cfg.events.web_audit_users), group_gid=gid)
     await service.start()
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
@@ -81,8 +82,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"verification re-anchored at seq {seq}")
                     return 0
                 res = check_integrity(store, key)
-                print(f"{'OK' if res.ok else 'FAILED'}: checked={res.checked} reason={res.reason or '-'} "
-                      f"first_bad_seq={res.first_bad_seq}")
+                print(f"{'OK' if res.ok else 'FAILED'}: events={res.checked} checkpoints={res.checkpoints} "
+                      f"reason={res.reason or '-'} first_bad_seq={res.first_bad_seq}")
                 return 0 if res.ok else 1
             finally:
                 store.close()

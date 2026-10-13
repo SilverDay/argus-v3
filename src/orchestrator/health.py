@@ -60,6 +60,7 @@ async def run_checks(cfg: Config, broker: BrokerClient, clamd: ClamdClient, *,
             ver = await clamd.version()
             rep.details["clamav_engine"] = ver.engine
             rep.details["clamav_db_version"] = ver.db_version
+            rep.details["clamav_db_time"] = ver.db_time
             if ver.db_time is None:
                 rep.failures.append("signatures_unknown")
             else:

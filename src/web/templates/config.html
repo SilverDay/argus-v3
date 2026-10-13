@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Configuration{% endblock %}
+{% block content %}
+<h1>Active configuration <span class="muted">(read-only)</span></h1>
+<p class="muted">Secret fields contain references (file:, credential:, env:) only — secret values are never loaded here.
+Configuration changes follow the documented on-device procedure; they cannot be made from this interface.</p>
+<pre class="config">{{ config_text }}</pre>
+{% endblock %}

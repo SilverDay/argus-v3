@@ -50,7 +50,10 @@ def open_store(cfg: Config) -> EventStore:
 def check_integrity(store: EventStore, key: bytes | None) -> VerifyResult:
     res = store.verify()
     if res.ok and key is not None:
-        res = store.verify_checkpoints(key)
+        cps = store.verify_checkpoints(key)
+        if not cps.ok:
+            return cps
+        res.checkpoints = cps.checked          # report both: events walked, checkpoints checked
     return res
 
 
@@ -76,7 +79,7 @@ def acknowledge_tamper(store: EventStore, actor: str, note: str) -> int:
 
 class EventsService:
     def __init__(self, cfg: Config, key: bytes, resolve: Callable[[str], bytes], *, writer_uids: frozenset[int],
-                 reader_uids: frozenset[int], group_gid: int | None) -> None:
+                 reader_uids: frozenset[int], group_gid: int | None, web_uids: frozenset[int] = frozenset()) -> None:
         if len(key) < MIN_KEY_BYTES:
             raise ValueError("events.hmac_key_ref must provide at least 32 bytes")
         self.cfg = cfg
@@ -102,7 +105,7 @@ class EventsService:
         self.forwarder = Forwarder(self.store, senders, max_attempts=e.max_attempts,
                                    backoff_initial=e.backoff_initial_seconds, backoff_max=e.backoff_max_seconds)
         self.server = EventsServer(self.store, e.socket_path, writer_uids=writer_uids, reader_uids=reader_uids,
-                                   group_gid=group_gid, on_append=self.forwarder.wake,
+                                   web_uids=web_uids, group_gid=group_gid, on_append=self.forwarder.wake,
                                    status_extra=lambda: {"channels_unavailable": list(self.unavailable)})
         self._tasks: list[asyncio.Task] = []
 

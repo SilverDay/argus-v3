@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Scan {{ ev.seq }}{% endblock %}
+{% block content %}
+<h1>Scan {{ ev.seq }} <span class="badge verdict-{{ p.verdict|lower }}">{{ p.verdict }}</span></h1>
+<div class="grid">
+<section class="card"><h2>Session</h2><dl>
+  <dt>Scan ID</dt><dd>{{ p.metadata.scan_id }}</dd>
+  <dt>Started</dt><dd>{{ p.metadata.session_start_utc }}</dd>
+  <dt>Finished</dt><dd>{{ p.metadata.session_end_utc or '—' }}</dd>
+  <dt>Device</dt><dd>{{ device.vendor_id }}:{{ device.product_id }} {{ device.serial }}</dd>
+  <dt>Reason codes</dt><dd>{{ p.reason_codes|join(', ') }}</dd>
+  {% if p.engine_errors %}<dt>Engine errors</dt><dd>{{ p.engine_errors|join(', ') }}</dd>{% endif %}
+  {% if p.truncated %}<dt>Note</dt><dd>Lists in this record were truncated ({{ p.threat_count }} detections, {{ p.policy_violation_count }} policy violations in total).</dd>{% endif %}
+</dl></section>
+<section class="card"><h2>Coverage</h2><dl>
+  {% for k, v in p.coverage|dictsort %}{% if k != 'skip_reasons' %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endif %}{% endfor %}
+  <dt>skip_reasons</dt><dd>{% for k, v in p.coverage.skip_reasons|dictsort %}{{ k }}={{ v }} {% else %}none{% endfor %}</dd>
+</dl></section>
+</div>
+<h2>Detections</h2>
+<table><thead><tr><th>Engine</th><th>Signature</th><th>Severity</th><th>SHA-256</th>{% if admin %}<th>File</th>{% endif %}</tr></thead>
+<tbody>{% for t in threats %}<tr><td>{{ t.engine }}</td><td>{{ t.signature }}</td><td>{{ t.severity }}</td><td class="mono">{{ t.sha256 }}</td>{% if admin %}<td class="mono">{{ t.file }}</td>{% endif %}</tr>
+{% else %}<tr><td colspan="5" class="muted">None</td></tr>{% endfor %}</tbody></table>
+{% if admin and violations %}<h2>Policy violations</h2><ul>{% for v in violations %}<li class="mono">{{ v }}</li>{% endfor %}</ul>{% endif %}
+{% if not admin %}<p class="muted">File paths, policy-violation paths and device serials are visible to administrators only.</p>{% endif %}
+{% endblock %}

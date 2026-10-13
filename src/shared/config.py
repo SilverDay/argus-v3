@@ -267,10 +267,48 @@ class PinConfig:
 
 
 @dataclass(frozen=True)
+class RoleMapConfig:
+    """Claim values (e.g. IdP group names) granting each role; highest matching role wins."""
+    admin: tuple[str, ...] = ()
+    operator: tuple[str, ...] = ()
+    viewer: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class OidcConfig:
+    issuer: str = ""                      # https:// issuer; discovery at /.well-known/openid-configuration
+    client_id: str = ""
+    client_secret_ref: str = field(default="", metadata=_secret_ref())
+    scopes: tuple[str, ...] = ("openid", "profile", "email")
+    username_claim: str = "preferred_username"
+    role_claim: str = "groups"
+    roles: RoleMapConfig = RoleMapConfig()
+    # MFA proof (spec §10.2): the ID token must carry one of these amr values (RFC 8176)
+    # or one of these acr values. Which one an IdP emits is IdP-specific.
+    mfa_amr_values: tuple[str, ...] = ("mfa",)
+    mfa_acr_values: tuple[str, ...] = ()
+    allowed_algorithms: tuple[str, ...] = ("RS256", "PS256", "ES256")
+    clock_skew_seconds: int = field(default=60, metadata=_range(0, 300))
+    ca_file: str = ""
+    timeout_seconds: int = field(default=10, metadata=_range(1, 60))
+
+
+@dataclass(frozen=True)
+class LocalAccountsConfig:
+    """Isolated-network fallback (spec §10.2). File format, one account per line:
+    ``username:role:bcrypt_hash`` (role = viewer|operator|admin), bcrypt cost >= 12."""
+    accounts_ref: str = field(default="", metadata=_secret_ref())
+    max_failed_attempts: int = field(default=5, metadata=_range(1, 100))
+    lockout_minutes: int = field(default=15, metadata=_range(1, 24 * 60))
+
+
+@dataclass(frozen=True)
 class WebAuthConfig:
     oidc_enabled: bool = True
     require_mfa: bool = True
     local_fallback_allowed: bool = False
+    oidc: OidcConfig = OidcConfig()
+    local: LocalAccountsConfig = LocalAccountsConfig()
 
 
 @dataclass(frozen=True)
@@ -338,6 +376,13 @@ class AdminWebConfig:
     enabled: bool = False
     bind_host: str = "127.0.0.1"
     bind_port: int = field(default=8080, metadata=_range(1, 65535))
+    # External https URL behind the TLS reverse proxy (OIDC redirect URI base).
+    public_url: str = ""
+    # Number of reverse proxies whose X-Forwarded-For/-Proto are trusted (0 = none).
+    trusted_proxies: int = field(default=1, metadata=_range(0, 3))
+    state_dir: str = "/var/lib/usb-scan/web"           # sessions + local-login lockout
+    session_idle_minutes: int = field(default=15, metadata=_range(1, 240))
+    session_max_hours: int = field(default=8, metadata=_range(1, 24))
 
 
 @dataclass(frozen=True)
@@ -379,9 +424,12 @@ class ForwardingConfig:
 class EventsConfig:
     db_path: str = "/var/lib/usb-scan/events/events.db"
     socket_path: str = "/run/usb-scan/events.sock"
-    socket_group: str = "usbscan"         # socket 0660 usbscan-events:<group>
+    # Dedicated group: members (orchestrator, admin web) can reach events.sock only, not
+    # broker.sock / yara.sock (group usbscan). Roles are still enforced by SO_PEERCRED uid.
+    socket_group: str = "usbscan-audit"   # socket 0660 usbscan-events:<group>
     writer_users: tuple[str, ...] = ("usbscan",)          # may append events
     reader_users: tuple[str, ...] = ("usbscan-web",)      # query only
+    web_audit_users: tuple[str, ...] = ("usbscan-web",)   # may append web audit event types only
     hmac_key_ref: str = field(default="file:/etc/usb-scan/secrets/events-checkpoint.key", metadata=_secret_ref())
     checkpoint_interval_hours: int = field(default=1, metadata=_range(1, 168))
     retention_days: int = field(default=180, metadata=_range(7, 3650))
@@ -572,8 +620,7 @@ def validate(cfg: Config) -> None:
 
     if cfg.auth.web.oidc_enabled and not cfg.auth.web.require_mfa:
         errors.append("auth.web.require_mfa must be true when OIDC is enabled")
-    if not cfg.auth.web.oidc_enabled and cfg.admin_web.enabled and not cfg.auth.web.local_fallback_allowed:
-        errors.append("admin_web.enabled requires OIDC or an explicitly allowed local fallback")
+    _validate_web(cfg, errors)
 
     oh = cfg.operator_hold
     if oh.enabled:
@@ -674,6 +721,46 @@ def _validate_events(cfg: Config, errors: list[str]) -> None:
                 errors.append("events.forwarding.url: must be an https:// URL")
             elif parts.username or parts.password:
                 errors.append("events.forwarding.url: credentials in the URL are not allowed (use token_ref)")
+
+
+_ROLES = ("viewer", "operator", "admin")
+
+
+def _validate_web(cfg: Config, errors: list[str]) -> None:
+    w, a = cfg.admin_web, cfg.auth.web
+    if not _abs_path_ok(w.state_dir):
+        errors.append("admin_web.state_dir: must be an absolute path without '..'")
+    if not w.enabled:
+        return
+    parts = urllib.parse.urlsplit(w.public_url)
+    if parts.scheme != "https" or not parts.hostname or parts.path not in ("", "/") or parts.query:
+        errors.append("admin_web.public_url: https://host[:port] of the TLS reverse proxy is required")
+    if a.oidc_enabled:
+        o = a.oidc
+        ip = urllib.parse.urlsplit(o.issuer)
+        if ip.scheme != "https" or not ip.hostname or ip.query or ip.fragment:
+            errors.append("auth.web.oidc.issuer: https:// issuer URL required")
+        if not o.client_id:
+            errors.append("auth.web.oidc.client_id is required")
+        if "openid" not in o.scopes:
+            errors.append("auth.web.oidc.scopes must include 'openid'")
+        if a.require_mfa and not (o.mfa_amr_values or o.mfa_acr_values):
+            errors.append("auth.web.require_mfa needs auth.web.oidc.mfa_amr_values or mfa_acr_values")
+        bad = [x for x in o.allowed_algorithms if x not in ("RS256", "RS384", "RS512", "PS256", "PS384",
+                                                             "PS512", "ES256", "ES384", "ES512", "EdDSA")]
+        if bad or not o.allowed_algorithms:
+            errors.append(f"auth.web.oidc.allowed_algorithms: asymmetric algorithms only, got {bad or 'none'}")
+        if not (o.roles.admin or o.roles.operator or o.roles.viewer):
+            errors.append("auth.web.oidc.roles: map at least one claim value to a role")
+        if o.ca_file and not _abs_path_ok(o.ca_file):
+            errors.append("auth.web.oidc.ca_file: must be an absolute path without '..'")
+    else:
+        if not a.local_fallback_allowed:
+            errors.append("admin_web.enabled requires OIDC or an explicitly allowed local fallback")
+        elif not a.local.accounts_ref:
+            errors.append("auth.web.local.accounts_ref is required for the local fallback")
+        elif a.local.accounts_ref.startswith("env:"):
+            errors.append("auth.web.local.accounts_ref must be a file: or credential: reference")
 
 
 def _validate_alerts(a: AlertsConfig, errors: list[str]) -> None:

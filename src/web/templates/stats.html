@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Statistics{% endblock %}
+{% block head %}
+<script src="{{ url_for('static', filename='vendor/chart-4.5.1.umd.min.js') }}" defer></script>
+<script src="{{ url_for('static', filename='stats.js') }}" defer></script>
+{% endblock %}
+{% block content %}
+<h1>Statistics <span class="muted">(last 30 days)</span></h1>
+<div class="grid" id="stats" data-endpoint="{{ url_for('views.stats_api') }}?days=30">
+  <section class="card"><h2>Scans per day</h2><div class="chart-box"><canvas id="scans-chart" aria-label="Scans per day" role="img"></canvas></div></section>
+  <section class="card"><h2>Detections per day</h2><div class="chart-box"><canvas id="threats-chart" aria-label="Detections per day" role="img"></canvas></div></section>
+  <section class="card"><h2>Top signatures</h2><ol id="top-signatures"><li class="muted">Loading…</li></ol></section>
+</div>
+<details class="card"><summary>Data table</summary>
+<div class="table-wrap"><table><thead><tr><th>Day (UTC)</th><th>Scans</th><th>Detections</th><th>Verdicts</th></tr></thead>
+<tbody id="stats-table-body"></tbody></table></div></details>
+{% endblock %}

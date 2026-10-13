@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.shared.models import EventType, ScanEvent, format_utc, utc_now
+from src.shared.scan_summary import scan_summary
 
 SCHEMA_VERSION = "1"
 GENESIS_DOMAIN = b"usb-scan-events-genesis\x00"
@@ -97,6 +98,7 @@ class VerifyResult:
     checked: int = 0
     first_bad_seq: int | None = None
     reason: str = ""
+    checkpoints: int = 0
 
 
 @dataclass
@@ -270,6 +272,71 @@ class EventStore:
             rows = self._db.execute(sql, args).fetchall()
         events = [self._row(r) for r in rows]
         return events if after_seq else events[::-1]
+
+    def before(self, before_seq: int, limit: int = 50, event_types: list[str] | None = None) -> list[StoredEvent]:
+        """Newest-first page of events older than ``before_seq`` (0 = from the head)."""
+        limit = max(1, min(int(limit), 500))
+        sql = f"SELECT {self._COLS} FROM events WHERE 1=1"
+        args: list[Any] = []
+        if before_seq:
+            sql += " AND seq < ?"
+            args.append(int(before_seq))
+        if event_types:
+            sql += f" AND event_type IN ({','.join('?' * len(event_types))})"
+            args.extend(event_types)
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY seq DESC LIMIT ?", [*args, limit]).fetchall()
+        return [self._row(r) for r in rows]
+
+    # --- scan history / statistics (admin web, read-only) -----------------------------
+
+    def scans(self, *, verdicts: list[str] | None = None, since: float | None = None, until: float | None = None,
+              serial: str | None = None, before_seq: int = 0, limit: int = 50) -> list[dict[str, Any]]:
+        """Newest-first VERDICT summaries. Date filters use the store's receive time (epoch)."""
+        limit = max(1, min(int(limit), 1000))
+        sql = "SELECT seq, received_at, payload FROM events WHERE event_type='verdict'"
+        args: list[Any] = []
+        if verdicts:
+            sql += f" AND json_extract(payload, '$.verdict') IN ({','.join('?' * len(verdicts))})"
+            args.extend(verdicts)
+        if since is not None:
+            sql += " AND received_at >= ?"
+            args.append(float(since))
+        if until is not None:
+            sql += " AND received_at < ?"
+            args.append(float(until))
+        if serial:
+            sql += " AND json_extract(payload, '$.device.serial') = ?"
+            args.append(serial)
+        if before_seq:
+            sql += " AND seq < ?"
+            args.append(int(before_seq))
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY seq DESC LIMIT ?", [*args, limit]).fetchall()
+        return [scan_summary(int(seq), float(at), json.loads(payload)) for seq, at, payload in rows]
+
+    def stats(self, days: int) -> dict[str, Any]:
+        days = max(1, min(int(days), 366))
+        since = self.clock() - days * 86_400
+        with self._lock:
+            per_day = self._db.execute(
+                "SELECT date(received_at, 'unixepoch') AS day, json_extract(payload, '$.verdict'),"
+                " COUNT(*), SUM(COALESCE(json_extract(payload, '$.threat_count'),"
+                " json_array_length(payload, '$.threats')))"
+                " FROM events WHERE event_type='verdict' AND received_at >= ? GROUP BY day, 2 ORDER BY day",
+                (since,)).fetchall()
+            top = self._db.execute(
+                "SELECT json_extract(t.value, '$.signature_name') AS sig, COUNT(*) FROM events,"
+                " json_each(events.payload, '$.threats') AS t WHERE events.event_type='verdict'"
+                " AND events.received_at >= ? GROUP BY sig ORDER BY 2 DESC, sig LIMIT 10", (since,)).fetchall()
+        days_out: dict[str, dict[str, Any]] = {}
+        for day, verdict, n, threats in per_day:
+            d = days_out.setdefault(day, {"day": day, "scans": 0, "threats": 0, "verdicts": {}})
+            d["scans"] += int(n)
+            d["threats"] += int(threats or 0)
+            d["verdicts"][str(verdict)] = int(n)
+        return {"days": days, "per_day": list(days_out.values()),
+                "top_signatures": [{"signature": str(sig), "count": int(n)} for sig, n in top]}
 
     def last_of_type(self, event_type: EventType) -> StoredEvent | None:
         with self._lock:

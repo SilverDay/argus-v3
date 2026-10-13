@@ -142,7 +142,28 @@ auth:
   web:
     oidc_enabled: true
     require_mfa: true                   # mandatory with OIDC
-    local_fallback_allowed: false       # isolated management networks only
+    local_fallback_allowed: false       # isolated management networks only (only used without OIDC)
+    oidc:
+      issuer: ""                        # https://idp.example.org/realms/mgmt (exact issuer string)
+      client_id: ""
+      client_secret_ref: ""             # e.g. credential:web_oidc_client_secret (empty = public client + PKCE)
+      scopes: [openid, profile, email]
+      username_claim: preferred_username
+      role_claim: groups
+      roles:                            # claim values per role; highest match wins
+        admin: []
+        operator: []
+        viewer: []
+      mfa_amr_values: [mfa]             # ID token amr must contain one (RFC 8176) ...
+      mfa_acr_values: []                # ... or acr must be one of these (IdP-specific)
+      allowed_algorithms: [RS256, PS256, ES256]
+      clock_skew_seconds: 60
+      ca_file: ""
+      timeout_seconds: 10
+    local:
+      accounts_ref: ""                  # file: or credential: — lines "username:role:bcrypt_hash" (cost >= 12)
+      max_failed_attempts: 5            # per account and per client address
+      lockout_minutes: 15
 
 quarantine:
   quarantine_on_threat: false           # copies THREAT-level (high severity) detections only
@@ -183,8 +204,13 @@ alerts:
 
 admin_web:
   enabled: false                        # enable only after HTTPS + auth are configured
-  bind_host: 127.0.0.1
+  bind_host: 127.0.0.1                  # behind the TLS reverse proxy only (spec §9.1)
   bind_port: 8080
+  public_url: ""                        # https://station-001.mgmt.example.org (OIDC redirect base)
+  trusted_proxies: 1                    # proxies whose X-Forwarded-For/-Proto are trusted
+  state_dir: /var/lib/usb-scan/web      # sessions + local-login lockout (0700)
+  session_idle_minutes: 15
+  session_max_hours: 8
 
 logging:
   level: INFO
@@ -201,9 +227,10 @@ logging:
 events:
   db_path: /var/lib/usb-scan/events/events.db     # owned by usbscan-events, 0600
   socket_path: /run/usb-scan/events.sock
-  socket_group: usbscan                 # socket 0660 usbscan-events:usbscan
+  socket_group: usbscan-audit           # socket 0660 usbscan-events:usbscan-audit (orchestrator + web join it)
   writer_users: [usbscan]               # orchestrator: append + query
-  reader_users: [usbscan-web]           # admin web: query only
+  reader_users: [usbscan-web]           # query only
+  web_audit_users: [usbscan-web]        # admin web: query + its own web_auth/web_access audit events
   hmac_key_ref: file:/etc/usb-scan/secrets/events-checkpoint.key   # >= 32 bytes
   checkpoint_interval_hours: 1
   retention_days: 180                   # only fully delivered events are pruned

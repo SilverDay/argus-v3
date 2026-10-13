@@ -47,13 +47,19 @@ orchestrator ──append (SO_PEERCRED writer)──▶ events.sock ──▶ SQ
   - The spool (bounded, default 64 MB) only has to cover the scan in progress. If it is full,
     the commit fails; the job ends in ERROR, the device is still released, and the verdict is
     shown.
-- **Roles.** `events.writer_users` (orchestrator) may append and query. `events.reader_users`
-  (admin web, Phase 9) may only query (`ping`, `status`, `last_verdict`, `recent`). All other
-  uids are disconnected unread. Clients cannot submit service-generated types (checkpoint,
-  tamper) or local IPC types.
+- **Roles.**
+  - `events.writer_users` (orchestrator) may append and query.
+  - `events.web_audit_users` (admin web, Phase 9) may query and append only its own
+    `web_auth`/`web_access` audit events, and nobody else may append those.
+  - `events.reader_users` may only query.
+  - All other uids are disconnected unread.
+  - Clients cannot submit service-generated types (checkpoint, tamper) or local IPC types.
 - **Socket.** `/run/usb-scan/events.sock`, mode 0660, owned by `usbscan-events`, group
-  `events.socket_group` (default `usbscan`). This corrects the earlier note in CLAUDE.md,
-  which listed `usbscan:usbscan-events`: the server creates the socket, so its user owns it.
+  `events.socket_group`.
+  - Since Phase 9 the default group is `usbscan-audit`, a dedicated group. Joining it does
+    not also open `broker.sock` or `yara.sock`, which use group `usbscan`.
+  - This corrects the earlier note in CLAUDE.md, which listed `usbscan:usbscan-events`: the
+    server creates the socket, so its user owns it.
 
 ## Hash chain
 

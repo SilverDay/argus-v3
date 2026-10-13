@@ -1,0 +1,47 @@
+<div class="grid">
+  <section class="card">
+    <h2>Station</h2>
+    <dl>
+      <dt>Version</dt><dd>{{ version }}</dd>
+      <dt>CPU temperature</dt><dd>{% if cpu_temp is not none %}{{ cpu_temp }} °C{% else %}unknown{% endif %}</dd>
+      <dt>Disk</dt><dd>{% if disk %}{{ disk.free_mb }} MB free of {{ disk.total_mb }} MB ({{ disk.used_pct }} % used){% else %}unknown{% endif %}</dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>Health</h2>
+    {% if not events_ok %}<p class="alert">Events service unavailable.</p>
+    {% elif health %}
+    <p class="badge {{ 'ok' if health.passed else 'bad' }}">{{ 'READY' if health.passed else 'NOT READY' }}</p>
+    <dl>
+      {% if health.failures %}<dt>Failures</dt><dd>{{ health.failures|join(', ') }}</dd>{% endif %}
+      {% if health.warnings %}<dt>Warnings</dt><dd>{{ health.warnings|join(', ') }}</dd>{% endif %}
+      <dt>ClamAV</dt><dd>{{ health.clamav_engine or '?' }} / DB {{ health.clamav_db_version or '?' }}</dd>
+      <dt>Signature age</dt><dd>{% if health.signature_age_h is not none %}{{ health.signature_age_h }} h{% else %}unknown{% endif %}</dd>
+      <dt>YARA rules</dt><dd>{{ health.yara_rules_version or 'not enabled / unknown' }}</dd>
+      <dt>Reported</dt><dd>{{ health.reported_utc }}</dd>
+    </dl>
+    {% else %}<p class="muted">No health report yet.</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>Last scan</h2>
+    {% if last_scan %}
+    <p class="badge verdict-{{ last_scan.verdict|lower }}">{{ last_scan.verdict }}</p>
+    <dl>
+      <dt>Finished</dt><dd>{{ last_scan.finished_utc or '—' }}</dd>
+      <dt>Files</dt><dd>{{ last_scan.files_scanned }} of {{ last_scan.files_discovered }} scanned · partitions {{ last_scan.partitions }}</dd>
+      <dt>Detections</dt><dd>{{ last_scan.threat_count }}{% if last_scan.signatures %}: {{ last_scan.signatures|join(', ') }}{% endif %}</dd>
+    </dl>
+    {% else %}<p class="muted">No scan recorded yet.</p>{% endif %}
+  </section>
+  {% if events_ok and events_status %}
+  <section class="card">
+    <h2>Audit log</h2>
+    {% if events_status.tamper %}<p class="alert">Audit chain verification FAILED ({{ events_status.tamper.reason }} at seq {{ events_status.tamper.first_bad_seq }}).</p>{% endif %}
+    <dl>
+      <dt>Events</dt><dd>{{ events_status.head_seq }}</dd>
+      {% for name, q in events_status.queues|dictsort %}<dt>Queue {{ name }}</dt><dd>{{ q.pending }} pending · {{ q.dead }} dead</dd>{% endfor %}
+      <dt>Last checkpoint</dt><dd>{% if events_status.last_checkpoint_age_s is not none %}{{ (events_status.last_checkpoint_age_s / 60)|round(0)|int }} min ago{% else %}none{% endif %}</dd>
+    </dl>
+  </section>
+  {% endif %}
+</div>

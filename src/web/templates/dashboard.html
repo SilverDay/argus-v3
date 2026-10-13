@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div id="status" hx-get="{{ url_for('views.status_partial') }}" hx-trigger="every 5s" hx-swap="innerHTML">
+{% include "_status.html" %}
+</div>
+{% endblock %}

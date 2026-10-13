@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Scan history{% endblock %}
+{% block content %}
+<h1>Scan history</h1>
+<form method="get" class="filters">
+  <label>From <input type="date" name="from" value="{{ args.get('from', '') }}"></label>
+  <label>To <input type="date" name="to" value="{{ args.get('to', '') }}"></label>
+  <fieldset><legend>Verdict</legend>
+    {% for v in verdicts %}<label class="inline"><input type="checkbox" name="verdict" value="{{ v }}" {% if v in args.getlist('verdict') %}checked{% endif %}> {{ v }}</label>{% endfor %}
+  </fieldset>
+  {% if can('admin') %}<label>Device serial <input name="serial" maxlength="128" value="{{ args.get('serial', '') }}"></label>{% endif %}
+  <button type="submit">Filter</button>
+</form>
+<p><a href="{{ url_for('views.export', fmt='csv') }}?{{ base_qs }}">Export CSV</a> · <a href="{{ url_for('views.export', fmt='json') }}?{{ base_qs }}">Export JSON</a></p>
+<table>
+  <thead><tr><th>#</th><th>Finished (UTC)</th><th>Verdict</th><th>Detections</th><th>Files</th><th>Partitions</th><th>Device</th></tr></thead>
+  <tbody>
+  {% for s in scans %}
+  <tr>
+    <td><a href="{{ url_for('views.scan_detail', seq=s.seq) }}">{{ s.seq }}</a></td>
+    <td>{{ s.finished_utc or '—' }}</td>
+    <td><span class="badge verdict-{{ s.verdict|lower }}">{{ s.verdict }}</span></td>
+    <td>{{ s.threat_count }}{% if s.signatures %} ({{ s.signatures|join(', ') }}){% endif %}</td>
+    <td>{{ s.files_scanned }}/{{ s.files_discovered }}</td>
+    <td>{{ s.partitions }}</td>
+    <td>{{ s.device.vendor_id }}:{{ s.device.product_id }} {{ s.device.serial }}</td>
+  </tr>
+  {% else %}<tr><td colspan="7" class="muted">No scans match.</td></tr>{% endfor %}
+  </tbody>
+</table>
+{% if next_before %}<p><a href="?{{ base_qs }}{{ '&' if base_qs }}before={{ next_before }}">Older scans</a></p>{% endif %}
+{% endblock %}

@@ -45,6 +45,8 @@ from .virustotal import VirusTotalClient
 
 log = logging.getLogger(__name__)
 IDLE_STATES = (GUIState.IDLE, GUIState.NOT_READY, GUIState.STARTING)
+HEALTH_VERSION_KEYS = ("clamav_engine", "clamav_db_version", "yara_rules_version")
+HEALTH_REPUBLISH_SECONDS = 3600
 GUI_MAX_THREATS = 20
 GUI_MAX_REASONS = 40
 WAITING_FOR_REMOVAL = (GUIState.RESULT, GUIState.EJECT_FAILED, GUIState.REJECTED, GUIState.ERROR)
@@ -94,6 +96,8 @@ class Orchestrator:
         self.active: ActiveDevice | None = None
         self.hold: HoldState | None = None
         self.last_result: ScanResult | None = None
+        self._health_versions: dict[str, Any] = {}
+        self._health_published = float("-inf")
         self._lock = asyncio.Lock()
 
     # --- publishing ---------------------------------------------------------
@@ -145,10 +149,18 @@ class Orchestrator:
                                   events=getattr(self.sink, "health_failures", None))
         await self._optional_module_checks(report)
         changed = report.failures != self.health.failures
+        versions = {k: report.details.get(k) for k in HEALTH_VERSION_KEYS}
+        republish = (versions != self._health_versions
+                     or time.monotonic() - self._health_published >= HEALTH_REPUBLISH_SECONDS)
         self.health = report
-        if changed or self.state is GUIState.STARTING:
+        if changed or republish or self.state is GUIState.STARTING:
+            # Details (versions, signature time, temperatures) feed the admin dashboard.
             await self.publish(ScanEvent(EventType.HEALTH, None, {
-                "passed": report.passed, "failures": report.failures, "warnings": report.warnings}))
+                "passed": report.passed, "failures": report.failures, "warnings": report.warnings,
+                "details": dict(report.details)}))
+            self._health_versions = versions
+            self._health_published = time.monotonic()
+        if changed or self.state is GUIState.STARTING:
             if report.failures:
                 await self.publish(ScanEvent(EventType.HEALTH_GATE_FAILED, None, {"failures": report.failures}))
         if self.state in IDLE_STATES:

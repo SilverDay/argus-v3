@@ -29,9 +29,10 @@ import httpx
 
 from src.shared.config import AlertsConfig, AlertSyslogFormat, Config, FilenamePrivacy, SmtpSecurity
 from src.shared.models import EventType, ScanResult, Verdict, format_utc, utc_now
+from src.shared.version import VERSION
 
 log = logging.getLogger(__name__)
-PRODUCT_VERSION = "0.1.0"
+PRODUCT_VERSION = VERSION
 MAX_THREATS = 50
 
 _SYSLOG_SEVERITY = {"THREAT": 2, "ERROR": 3, "NOT_READY": 3}          # crit / err; others warning (4)

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<h1>Audit log <span class="muted">(read-only)</span></h1>
+<form method="get" class="filters"><label>Type <select name="type"><option value="">all audit types</option>
+{% for t in types %}<option value="{{ t }}" {% if t == kind %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+<button type="submit">Show</button></form>
+<table><thead><tr><th>#</th><th>Time (UTC)</th><th>Type</th><th>Details</th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.seq }}</td><td>{{ r.time }}</td><td>{{ r.type }}</td><td class="mono small">{{ r.summary }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">No entries.</td></tr>{% endfor %}</tbody></table>
+{% if next_before %}<p><a href="?type={{ kind }}&amp;before={{ next_before }}">Older entries</a></p>{% endif %}
+{% endblock %}

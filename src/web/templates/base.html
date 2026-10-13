@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"historyCacheSize":0,"selfRequestsOnly":true}'>
+  <title>{% block title %}USB Scan Station{% endblock %} · {{ station_id }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='vendor/htmx-2.0.11.min.js') }}" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">USB Scan Station <span class="muted">{{ station_id }}</span></span>
+  {% if user %}
+  <nav>
+    <a href="{{ url_for('views.dashboard') }}">Dashboard</a>
+    {% if can('operator') %}<a href="{{ url_for('views.history') }}">History</a>{% endif %}
+    <a href="{{ url_for('views.stats') }}">Statistics</a>
+    <a href="{{ url_for('views.config_view') }}">Configuration</a>
+    {% if can('admin') %}<a href="{{ url_for('views.audit_log') }}">Audit log</a>{% endif %}
+  </nav>
+  <form method="post" action="{{ url_for('auth.logout') }}" class="logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <span class="muted">{{ user.user }} ({{ user.role }})</span>
+    <button type="submit">Sign out</button>
+  </form>
+  {% endif %}
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

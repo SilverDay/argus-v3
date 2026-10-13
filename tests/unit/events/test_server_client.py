@@ -150,3 +150,30 @@ async def test_client_reports_tamper(server, paths):
     c = EventClient(paths["sock"], paths["state"])
     assert await c.health_failures() == ["audit_chain_broken"]
     await c.close()
+
+
+async def test_huge_verdict_is_bounded_not_wedged(server, paths):
+    """20 000 detections: the record is cut to the byte budget, never spooled forever."""
+    from src.shared.models import ThreatEntry
+    threats = [ThreatEntry(f"part1/dir/file{i:06d}.exe", "clamav", "Win.Test.Evil", "a" * 64) for i in range(20000)]
+    big = result(Verdict.THREAT)
+    big.threats = threats
+    big.policy_violations = [f"blocked_extension:exe:part1/x{i}.exe" for i in range(20000)]
+    c = EventClient(paths["sock"], paths["state"])
+    await c.commit_result(big, {})
+    assert not c.spool_pending()
+    stored = server.store.last_of_type(EventType.VERDICT).payload
+    assert stored["verdict"] == "THREAT" and stored["threat_count"] == 20000 and stored["truncated"] is True
+    assert 0 < len(stored["threats"]) < 20000 and stored["policy_violation_count"] == 20000
+    assert await c.health_failures() == []
+    await c.close()
+
+
+async def test_oversized_event_is_rejected_not_spooled(paths):
+    c = EventClient(paths["sock"], paths["state"])          # service not even running
+    await c.publish(ScanEvent(EventType.SCAN_STARTED, "s1", {"blob": "x" * (2 * 1024 * 1024)}))
+    await c.commit_result(result(), {})                     # later events are unaffected (spooled)
+    assert c.spool_pending()
+    with open(c.spool_path) as fh:
+        assert "blob" not in fh.read()
+    await c.close()

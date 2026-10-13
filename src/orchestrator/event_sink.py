@@ -28,9 +28,37 @@ def _write_line(path: str, obj: dict[str, Any]) -> None:
         os.close(fd)
 
 
+# Byte budgets per list so a committed record always fits one events-service message
+# (events_protocol.MAX_LINE_BYTES = 1 MiB). Totals are kept in *_count fields.
+RECORD_BUDGETS = {"threats": 512 * 1024, "policy_violations": 128 * 1024,
+                  "engine_errors": 32 * 1024, "reason_codes": 32 * 1024}
+
+
+def _bounded(items: list[Any], budget: int) -> list[Any]:
+    out, used = [], 0
+    for item in items:
+        used += len(json.dumps(item, separators=(",", ":"), ensure_ascii=True)) + 1
+        if used > budget:
+            break
+        out.append(item)
+    return out
+
+
 def verdict_event(result: ScanResult, device: dict[str, Any] | None) -> ScanEvent:
-    """The committed scan record: full ScanResult plus device identifiers (protected store)."""
+    """The committed scan record: ScanResult plus device identifiers (protected store).
+
+    Very large lists (a stick full of malware) are cut to a byte budget; the verdict and
+    coverage are never cut, and ``truncated`` + the *_count fields record what was dropped.
+    """
     payload = result.to_dict()
+    truncated = False
+    for key, budget in RECORD_BUDGETS.items():
+        full = payload[key]
+        payload[key] = _bounded(full, budget)
+        truncated |= len(payload[key]) < len(full)
+    payload["threat_count"] = len(result.threats)
+    payload["policy_violation_count"] = len(result.policy_violations)
+    payload["truncated"] = truncated
     payload["device"] = dict(device or {})
     return ScanEvent(EventType.VERDICT, result.metadata.scan_id, payload)
 

@@ -36,6 +36,10 @@ class SpoolFull(Exception):
     pass
 
 
+class RecordTooLarge(Exception):
+    """Cannot be sent in one message: retrying or spooling would wedge the queue."""
+
+
 class EventClient(ActiveScanMarker):
     def __init__(self, socket_path: str, state_dir: str, *, spool_max_bytes: int = 64 * 1024 * 1024,
                  timeout: float = 10.0, retry_interval: float = 5.0) -> None:
@@ -137,7 +141,7 @@ class EventClient(ActiveScanMarker):
                 await self._handle(record)
                 if done is not None and not done.done():
                     done.set_result(None)
-            except Exception as exc:  # SpoolFull or unexpected: the commit must see it
+            except Exception as exc:  # SpoolFull, RecordTooLarge or unexpected: the commit must see it
                 log.critical("event could not be stored or spooled: %s", type(exc).__name__)
                 if done is not None and not done.done():
                     done.set_exception(exc)
@@ -167,9 +171,13 @@ class EventClient(ActiveScanMarker):
             self._conn = None
 
     async def _send(self, record: dict[str, Any]) -> None:
+        try:
+            line = proto.encode({"op": "append", "event": record})
+        except proto.EventsProtocolError:
+            raise RecordTooLarge(str(record.get("event_type"))) from None
         reader, writer = await self._connect()
         try:
-            writer.write(proto.encode({"op": "append", "event": record}))
+            writer.write(line)
             await asyncio.wait_for(writer.drain(), self.timeout)
             resp = proto.decode(await asyncio.wait_for(reader.readline(), self.timeout))
         except (OSError, asyncio.TimeoutError, proto.EventsProtocolError) as exc:
@@ -219,6 +227,8 @@ class EventClient(ActiveScanMarker):
                 await self._send(record)
             except EventsUnavailable:
                 return False                               # keep the spool; duplicates are harmless
+            except RecordTooLarge:
+                log.critical("dropping spooled %s event: too large to send", record.get("event_type"))
         with contextlib.suppress(FileNotFoundError):
             os.unlink(self.spool_path)
         log.info("event spool replayed (%d events)", len(lines))

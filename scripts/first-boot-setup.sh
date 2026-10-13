@@ -97,6 +97,9 @@ done
 sed -i -E 's|^[[:space:]]*TCPSocket[[:space:]]|#TCPSocket |' "$CLAMD"
 install -d -m 0755 /etc/systemd/system/clamav-daemon.service.d
 install -m 0644 "$APP/systemd/clamav-daemon.service.d/usb-scan.conf" /etc/systemd/system/clamav-daemon.service.d/
+# Socket activation: without this the socket node is created 0666 (systemd default).
+install -d -m 0755 /etc/systemd/system/clamav-daemon.socket.d
+install -m 0644 "$APP/systemd/clamav-daemon.socket.d/usb-scan.conf" /etc/systemd/system/clamav-daemon.socket.d/
 
 # --- 7. kernel surface, automount ---------------------------------------------------------------------
 log "Kernel module blacklist and automount masking"
@@ -139,7 +142,11 @@ fi
 # --- 11. enable services ---------------------------------------------------------------------------------------
 log "Enabling services"
 systemctl enable --now clamav-freshclam.service
-systemctl restart clamav-daemon.service
+systemctl stop clamav-daemon.service
+if systemctl cat clamav-daemon.socket >/dev/null 2>&1; then
+    systemctl restart clamav-daemon.socket      # recreate the node with SocketMode=0660
+fi
+systemctl start clamav-daemon.service
 SERVICES=(usb-scan-events usb-scan-device-broker usb-scan-orchestrator usb-scan-gui)
 [[ $YARA_ENABLED == 1 ]] && SERVICES+=(usb-scan-yara)
 [[ $(cfgval "c.led.driver.value") != stub ]] && SERVICES+=(usb-scan-led)

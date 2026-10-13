@@ -45,6 +45,8 @@ from .virustotal import VirusTotalClient
 
 log = logging.getLogger(__name__)
 IDLE_STATES = (GUIState.IDLE, GUIState.NOT_READY, GUIState.STARTING)
+GUI_MAX_THREATS = 20
+GUI_MAX_REASONS = 40
 WAITING_FOR_REMOVAL = (GUIState.RESULT, GUIState.EJECT_FAILED, GUIState.REJECTED, GUIState.ERROR)
 
 
@@ -119,13 +121,22 @@ class Orchestrator:
 
     @staticmethod
     def gui_verdict_payload(result: ScanResult) -> dict[str, Any]:
-        """What the public screen may show: no file paths, no device serials (spec §4.4)."""
+        """What the public screen may show: no file paths, no device serials (spec §4.4).
+
+        Bounded so it always fits one state-socket frame (ipc.MAX_LINE_BYTES): distinct
+        detections only, at most GUI_MAX_THREATS, with the total in ``threat_count``.
+        """
+        distinct: dict[tuple[str, str, str], None] = {}
+        for t in result.threats:
+            distinct.setdefault((t.engine, t.signature_name[:120], t.severity.value), None)
+            if len(distinct) >= GUI_MAX_THREATS:
+                break
         return {
             "verdict": result.verdict.value,
-            "reason_codes": result.reason_codes,
+            "reason_codes": [r[:120] for r in result.reason_codes[:GUI_MAX_REASONS]],
             "coverage": result.coverage.to_dict(),
-            "threats": [{"engine": t.engine, "signature": t.signature_name, "severity": t.severity.value}
-                        for t in result.threats],
+            "threats": [{"engine": e, "signature": sig, "severity": sev} for e, sig, sev in distinct],
+            "threat_count": len(result.threats),
             "policy_violation_count": len(result.policy_violations),
         }
 

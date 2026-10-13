@@ -55,7 +55,7 @@ class OperatorPanel(QFrame):
             cov = last_scan.get("coverage", {})
             self.summary.setText(QCoreApplication.translate("usbscan", "Last scan: {v} — {s} of {d} files scanned, {t} detections").format(
                 v=last_scan.get("verdict", "?"), s=cov.get("files_scanned", 0),
-                d=cov.get("files_discovered", 0), t=len(last_scan.get("threats", []))))
+                d=cov.get("files_discovered", 0), t=last_scan.get("threat_count", len(last_scan.get("threats", [])))))
         else:
             self.summary.setText(QCoreApplication.translate("usbscan", "No scan since start."))
         if health:

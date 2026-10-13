@@ -130,7 +130,8 @@ class ResultScreen(StateScreen):
                 names = sorted({str(t.get("signature", ""))[:60] for t in threats})[:3]
                 lines.append(QCoreApplication.translate("usbscan", "Detections: {n}").format(n=", ".join(names)))
             else:
-                lines.append(QCoreApplication.translate("usbscan", "{n} detections").format(n=len(threats)))
+                lines.append(QCoreApplication.translate("usbscan", "{n} detections").format(
+                    n=self.verdict.get("threat_count", len(threats))))
         if "restricted_extension_scope" in self.verdict.get("reason_codes", []):
             lines.append(QCoreApplication.translate("usbscan", "Only selected file types were checked."))   # spec §6.2 disclosure
         self.detail.setText("\n".join(lines))

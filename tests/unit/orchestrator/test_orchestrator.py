@@ -583,3 +583,19 @@ async def test_snapshot_includes_verdict_while_result_shown(harness):
     events = orch.snapshot(GUI)
     assert [e.event_type for e in events] == [EventType.VERDICT, EventType.STATE_CHANGED]
     assert events[0].payload["verdict"] == "CLEAN" and events[1].payload["state"] == "RESULT"
+
+
+async def test_many_detections_fit_on_state_socket(harness, env):
+    """A stick full of malware must not overflow the 64 KiB state-socket frame."""
+    from src.shared.ipc import encode_event
+    for i in range(1500):
+        (env["part1"] / f"evil{i:04d}.exe").write_bytes(b"..EVIL..")
+    sent = []
+    orch, *_ = harness()
+    orch._broadcast = lambda ev: sent.append(encode_event(ev))      # real wire encoding
+    await start(orch)
+    await run_scan(orch)
+    assert orch.state is GUIState.RESULT
+    (payload,) = [json.loads(l)["payload"] for l in sent if b'"verdict","scan_id"' in l or b'"event_type":"verdict"' in l]
+    assert payload["verdict"] == "THREAT" and payload["threat_count"] == 1500
+    assert len(payload["threats"]) <= 20

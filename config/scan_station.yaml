@@ -113,8 +113,13 @@ virustotal:
   network_outage_policy_ref: ""         # mandatory role requires a documented outage policy (doc ID/URL)
   cache_ttl_days: 7
   rate_limit_per_minute: 4
-  large_file_hash_budget_mb: 4096
+  large_file_hash_budget_mb: 4096       # per-scan SHA-256 hashing budget (not an upload limit)
   request_timeout_seconds: 15
+  suspicious_min_malicious: 1           # >= N engines "malicious" -> SUSPICIOUS
+  threat_min_malicious: 5               # >= N engines "malicious" -> THREAT
+  cache_path: /var/lib/usb-scan/db/vt_cache.db   # cache_ttl_days: 0 disables the cache
+  finish_wait_seconds: 120              # wait for outstanding lookups after the local scan
+  ca_file: ""                           # optional extra CA; verification is always on
 
 operator_hold:
   enabled: false
@@ -138,11 +143,42 @@ auth:
     local_fallback_allowed: false       # isolated management networks only
 
 quarantine:
-  quarantine_on_threat: false
-  path: /var/lib/usb-scan/quarantine
+  quarantine_on_threat: false           # copies THREAT-level (high severity) detections only
+  path: /var/lib/usb-scan/quarantine    # mount point of a LUKS2 mapping, rw,nodev,nosuid,noexec, mode 0700
   retention_days: 30
   min_free_mb: 1024
-  export_enabled: false
+  max_file_size_mb: 2047
+  max_files_per_scan: 50
+  export_enabled: false                 # not implemented; must stay false
+
+alerts:
+  verdicts: [THREAT, SUSPICIOUS, INCOMPLETE, ERROR, REJECTED]
+  not_ready: true                       # alert when a health gate fails
+  webhook:
+    enabled: false
+    url: ""                             # https:// only
+    token_ref: ""                       # e.g. credential:alert_webhook_token (Authorization: Bearer)
+    timeout_seconds: 10
+    retry_delay_seconds: 5
+    ca_file: ""
+  email:
+    enabled: false
+    smtp_host: ""
+    smtp_port: 587
+    security: starttls                  # starttls | tls (implicit, port 465)
+    username: ""
+    password_ref: ""                    # e.g. credential:smtp_password
+    from_addr: ""
+    to_addrs: []
+    timeout_seconds: 20
+    ca_file: ""
+  syslog:
+    enabled: false
+    host: ""
+    port: 6514                          # TLS only (RFC 5425)
+    format: rfc5424                     # rfc5424 (JSON body) | cef
+    timeout_seconds: 10
+    ca_file: ""
 
 admin_web:
   enabled: false                        # enable only after HTTPS + auth are configured

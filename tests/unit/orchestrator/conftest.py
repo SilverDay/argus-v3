@@ -40,13 +40,16 @@ def make_cfg(env, **overrides):
 
 @pytest.fixture
 def harness(env):
-    def build(cfg_overrides=None, broker=None, clamd=None, auth=None):
+    def build(cfg_overrides=None, broker=None, clamd=None, auth=None, **modules):
         cfg = make_cfg(env, **(cfg_overrides or {}))
         broker = broker or FakeBroker({"part1": str(env["part1"])})
         clamd = clamd or FakeClamd()
         events = []
+        orch_ref: list = []
         sink = JsonlEventSink(str(env["data"] / "db"))
         orch = Orchestrator(cfg, broker, clamd, sink, events.append, auth=auth,
-                            sysfs_root=env["sysfs"], gui_uids=frozenset({4242}))
+                            sysfs_root=env["sysfs"], gui_uids=frozenset({4242}),
+                            **{k: (v(cfg, orch_ref) if callable(v) else v) for k, v in modules.items()})
+        orch_ref.append(orch)
         return orch, broker, clamd, events, sink
     return build

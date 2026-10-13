@@ -1,4 +1,4 @@
-"""One device scan: enumerate -> mount -> inventory -> ClamAV -> facts (spec §3.2).
+"""One device scan: enumerate -> mount -> inventory -> ClamAV/YARA/VT -> facts (spec §3.2).
 
 All counters live on ``self.facts`` and are updated as work happens, so if the task is
 cancelled (device removed, global timeout) the partial facts are still available
@@ -13,10 +13,10 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from src.shared.config import Config, normalise_partition_type
+from src.shared.config import Config, EngineRole, FailurePolicy, normalise_partition_type
 from src.shared.models import (
     CoverageMetrics, EventType, ScanEvent, ScanMetadata, ScanResult, Severity, SkipReason, ThreatEntry, Verdict,
     utc_now,
@@ -25,9 +25,11 @@ from src.shared.models import (
 from . import inventory
 from .broker_client import BrokerClient, BrokerError
 from .policy import ExtensionPolicy
+from .quarantine import Evidence
 from .scanner_clamav import ClamdClient, ClamdUnavailable, ClamResult, ClamStatus, open_for_scan
 from .scanner_yara_client import YaraClient, YaraResult, YaraSession, YaraUnavailable
 from .verdict_engine import ScanFacts, evaluate
+from .virustotal import VirusTotalClient, VtSession
 
 log = logging.getLogger(__name__)
 Publish = Callable[[ScanEvent], Awaitable[None]]
@@ -84,8 +86,16 @@ class ScanSession:
     def __init__(self, cfg: Config, broker: BrokerClient, clamd: ClamdClient, publish: Publish, *,
                  scan_id: str, session_id: str, sysfs_path: str,
                  read_temp: Callable[[], float | None] = lambda: None,
-                 yara: YaraClient | None = None) -> None:
+                 yara: YaraClient | None = None, vt: VirusTotalClient | None = None) -> None:
         self.cfg = cfg
+        self.vt = vt if cfg.virustotal.enabled else None
+        self._vt_session: VtSession | None = None
+        self._vt_budget = cfg.virustotal.large_file_hash_budget_mb * MB
+        self._vt_hashed = 0                  # in-scope files whose hash was submitted
+        self._vt_missed: dict[str, int] = {}  # reason -> files not looked up
+        self._vt_finished = False
+        self._vt_applied = False
+        self._evidence: list[tuple[ThreatEntry, str, inventory.FileEntry]] = []
         self.yara = yara if cfg.yara.enabled else None
         self._yara_session: YaraSession | None = None
         self._yara_scanned = 0
@@ -164,11 +174,21 @@ class ScanSession:
         """Inventory and scan every mounted volume. Cancellation leaves partial facts."""
         if self.cfg.yara.enabled:
             await self._open_yara()
+        if self.vt is not None:
+            self._vt_session = VtSession(self.vt)
         try:
             await self._scan_volumes()
+            if self._vt_session is not None and not self.facts.appliance_fault:
+                self._vt_finished = await self._vt_session.finish(float(self.cfg.virustotal.finish_wait_seconds))
+                for threat in self._apply_vt():
+                    await self.publish(ScanEvent(EventType.DETECTION, self.scan_id, {
+                        "engine": "virustotal", "signature": threat.signature_name,
+                        "severity": threat.severity.value}))
         finally:
             if self._yara_session is not None:
                 await self._yara_session.bye()
+            if self._vt_session is not None:
+                await self._vt_session.close()
 
     async def _scan_volumes(self) -> None:
         cov = self.facts.coverage
@@ -216,6 +236,16 @@ class ScanSession:
             self.facts.policy_violations.append(f"blocked_extension:{blocked}:{pid}/{inventory.display_path(entry.rel)}")
         if entry.size > self.cfg.clamav.max_file_size_mb * MB:
             cov.record_skip(SkipReason.TOO_LARGE_FOR_ENGINE)
+            if self._vt_session is not None:      # hash-only lookups have no size threshold
+                async with sem:
+                    fd = await asyncio.to_thread(self._open_file, pid, entry)
+                    if fd is None:
+                        self._vt_miss("unreadable")
+                        return
+                    try:
+                        await self._vt_submit(pid, entry, fd)
+                    finally:
+                        os.close(fd)
             return
         async with sem:
             if self.facts.appliance_fault:
@@ -227,8 +257,8 @@ class ScanSession:
             try:
                 result = await self.clamd.scan_fd(fd, float(self.cfg.clamav.per_file_timeout_seconds))
                 yres = await self._yara_scan(fd)
-                sha = ""
-                if result.status is ClamStatus.FOUND or (yres is not None and yres.status == "match"):
+                sha = await self._vt_submit(pid, entry, fd) if self._vt_session is not None else ""
+                if not sha and (result.status is ClamStatus.FOUND or (yres is not None and yres.status == "match")):
                     sha = await asyncio.to_thread(self._safe_sha256, fd)
             except ClamdUnavailable as exc:
                 self.facts.appliance_fault = True
@@ -240,6 +270,81 @@ class ScanSession:
         await self._record(pid, entry, result, sha)
         if yres is not None:
             await self._record_yara(pid, entry, yres, sha)
+
+    # --- VirusTotal hash reputation (spec §3.2 step 7) -------------------------
+
+    def _vt_miss(self, reason: str) -> None:
+        self._vt_missed[reason] = self._vt_missed.get(reason, 0) + 1
+
+    async def _vt_submit(self, pid: str, entry: inventory.FileEntry, fd: int) -> str:
+        """Hash the scanned descriptor within the hashing budget and queue the lookup."""
+        assert self._vt_session is not None
+        if entry.size > self._vt_budget:
+            self._vt_miss("hash_budget")
+            return ""
+        self._vt_budget -= entry.size
+        sha = await asyncio.to_thread(self._safe_sha256, fd, entry.size)
+        if not sha:
+            self._vt_miss("hash_failed")
+            return ""
+        self._vt_hashed += 1
+        self._vt_session.submit(sha, (pid, entry))
+        return sha
+
+    def _apply_vt(self) -> list[ThreatEntry]:
+        """Turn reputation results into findings (owner thresholds). Idempotent."""
+        if self._vt_session is None or self._vt_applied:
+            return []
+        self._vt_applied = True
+        vt = self.cfg.virustotal
+        found = []
+        for sha, res in self._vt_session.results.items():
+            if res.malicious < vt.suspicious_min_malicious:
+                continue
+            sev = Severity.HIGH if res.malicious >= vt.threat_min_malicious else Severity.MEDIUM
+            sig = f"VirusTotal.malicious={res.malicious}/{res.total}"
+            for pid, entry in self._vt_session.refs[sha]:
+                threat = ThreatEntry(f"{pid}/{inventory.display_path(entry.rel)}", "virustotal", sig, sha, sev)
+                self._add_threat(threat, pid, entry)
+                found.append(threat)
+        return found
+
+    def _vt_coverage(self) -> None:
+        cov = self.facts.coverage
+        session = self._vt_session
+        if session is None:
+            cov.vt_complete = False
+            if self.vt is None:
+                self.notes.append("virustotal_unavailable:client_missing")
+                if self.cfg.virustotal.role is EngineRole.MANDATORY and \
+                        self.cfg.virustotal.on_quota_or_network_failure is FailurePolicy.ERROR:
+                    self.facts.engine_failures.append("virustotal_client_missing")
+            return
+        cov.vt_complete = (
+            session.complete and self._vt_finished and not self._vt_missed
+            and not self.facts.appliance_fault and not self.facts.interrupted
+            and self._vt_hashed == self._in_scope
+        )
+        if session.failure:
+            self.notes.append(f"virustotal_unavailable:{session.failure}")
+            vt = self.cfg.virustotal
+            if vt.role is EngineRole.MANDATORY and vt.on_quota_or_network_failure is FailurePolicy.ERROR:
+                self.facts.engine_failures.append(f"virustotal_{session.failure}")
+        elif not self._vt_finished:
+            self.notes.append(f"virustotal_pending={len(session.refs) - len(session.results)}")
+        self.notes.extend(f"virustotal_{k}={v}" for k, v in sorted(self._vt_missed.items()))
+
+    def _add_threat(self, threat: ThreatEntry, pid: str, entry: inventory.FileEntry) -> None:
+        self.facts.threats.append(threat)
+        self._evidence.append((threat, pid, entry))
+
+    def evidence(self) -> list[Evidence]:
+        """High-severity detections eligible for quarantine (owner decision, Phase 7)."""
+        device = {"vendor_id": self.device.vendor_id, "product_id": self.device.product_id,
+                  "serial": self.device.serial}
+        return [Evidence(t.sha256, t.file_path, t.engine, t.signature_name,
+                         (lambda pid=pid, entry=entry: self._open_file(pid, entry)), device)
+                for t, pid, entry in self._evidence if t.severity is Severity.HIGH and t.sha256]
 
     # --- YARA (isolated worker, spec §3.2 step 6) -----------------------------
 
@@ -284,7 +389,7 @@ class ScanSession:
         for m in res.matches:
             sev = {"high": Severity.HIGH, "low": Severity.LOW}.get(str(m.get("severity")), Severity.MEDIUM)
             sig = f"{m.get('namespace', '')}.{m.get('rule', '')}"[:200]
-            self.facts.threats.append(ThreatEntry(f"{pid}/{inventory.display_path(entry.rel)}", "yara", sig, sha, sev))
+            self._add_threat(ThreatEntry(f"{pid}/{inventory.display_path(entry.rel)}", "yara", sig, sha, sev), pid, entry)
             await self.publish(ScanEvent(EventType.DETECTION, self.scan_id,
                                          {"engine": "yara", "signature": sig, "severity": sev.value}))
 
@@ -294,8 +399,8 @@ class ScanSession:
             cov.files_scanned += 1
             cov.bytes_read += entry.size
         if result.status is ClamStatus.FOUND:
-            self.facts.threats.append(ThreatEntry(f"{pid}/{inventory.display_path(entry.rel)}", "clamav",
-                                                  result.signature, sha, result.severity))
+            self._add_threat(ThreatEntry(f"{pid}/{inventory.display_path(entry.rel)}", "clamav",
+                                         result.signature, sha, result.severity), pid, entry)
             await self.publish(ScanEvent(EventType.DETECTION, self.scan_id,
                                          {"engine": "clamav", "signature": result.signature,
                                           "severity": result.severity.value}))
@@ -332,9 +437,9 @@ class ScanSession:
         except OSError:
             return None
 
-    def _safe_sha256(self, fd: int) -> str:
+    def _safe_sha256(self, fd: int, limit: int | None = None) -> str:
         try:
-            return _sha256_fd(fd, self.cfg.clamav.max_file_size_mb * MB)
+            return _sha256_fd(fd, self.cfg.clamav.max_file_size_mb * MB if limit is None else limit)
         except OSError:
             return ""
 
@@ -377,6 +482,9 @@ class ScanSession:
             if self._yara_unavailable:
                 self.notes.append(self._yara_unavailable)
             self.notes.extend(f"yara_{k}={v}" for k, v in sorted(self._yara_issues.items()))
+        if self.cfg.virustotal.enabled:
+            self._apply_vt()                 # results gathered before a cancellation still count
+            self._vt_coverage()
         verdict, reasons = evaluate(self.facts, self.cfg)
         self.metadata.session_end_utc = utc_now()
         return ScanResult(

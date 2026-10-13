@@ -9,6 +9,9 @@ STARTING -> NOT_READY | IDLE -> VALIDATING -> MOUNTING -> SCANNING -> EVALUATING
   threat stays THREAT, everything else becomes INCOMPLETE) and the session is released.
 * "Safe to remove" is only reported after a successful unmount (spec §3.5).
 * Operator PINs are verified here (never in the GUI); lockout is persistent.
+* Optional modules (Phase 7): VirusTotal lookups run inside the scan session; evidence
+  quarantine runs after the verdict is committed and before ejection; alerts are sent
+  asynchronously after the commit. Neither quarantine nor alerting can change a verdict.
 """
 from __future__ import annotations
 
@@ -22,20 +25,23 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.shared.auth import AuthManager
-from src.shared.config import Config
+from src.shared.config import Config, EngineRole
 from src.shared.ipc import PeerCredentials
 from src.shared.models import (
     DeviceLifecycle, EventType, GUIState, ScanEvent, ScanResult, Verdict,
 )
 
 from . import device_check
+from .alerting import AlertDispatcher
 from .broker_client import BrokerClient, BrokerError
 from .event_sink import JsonlEventSink
 from .health import HealthReport, read_cpu_temp, run_checks
+from .quarantine import Quarantine, QuarantineUnavailable
 from .scan_session import DeviceRejected, ScanSession
 from .scanner_clamav import ClamdClient
 from .scanner_yara_client import YaraClient
 from .usb_monitor import UsbEvent
+from .virustotal import VirusTotalClient
 
 log = logging.getLogger(__name__)
 IDLE_STATES = (GUIState.IDLE, GUIState.NOT_READY, GUIState.STARTING)
@@ -66,8 +72,13 @@ class ActiveDevice:
 class Orchestrator:
     def __init__(self, cfg: Config, broker: BrokerClient, clamd: ClamdClient, sink: JsonlEventSink,
                  broadcast: Callable[[ScanEvent], None], *, auth: AuthManager | None = None,
-                 sysfs_root: str = "/sys", gui_uids: frozenset[int] = frozenset()) -> None:
+                 sysfs_root: str = "/sys", gui_uids: frozenset[int] = frozenset(),
+                 vt: VirusTotalClient | None = None, quarantine: Quarantine | None = None,
+                 alerts: AlertDispatcher | None = None) -> None:
         self.cfg = cfg
+        self.vt = vt if cfg.virustotal.enabled else None
+        self.quarantine = quarantine if cfg.quarantine.quarantine_on_threat else None
+        self.alerts = alerts
         self.broker = broker
         self.clamd = clamd
         self.yara = YaraClient(cfg.yara.socket_path,
@@ -122,6 +133,7 @@ class Orchestrator:
 
     async def check_health(self) -> None:
         report = await run_checks(self.cfg, self.broker, self.clamd, yara=self.yara)
+        await self._optional_module_checks(report)
         changed = report.failures != self.health.failures
         self.health = report
         if changed or self.state is GUIState.STARTING:
@@ -129,10 +141,29 @@ class Orchestrator:
                 "passed": report.passed, "failures": report.failures, "warnings": report.warnings}))
             if report.failures:
                 await self.publish(ScanEvent(EventType.HEALTH_GATE_FAILED, None, {"failures": report.failures}))
+                if self.alerts is not None:
+                    self.alerts.on_not_ready(self.cfg.station.station_id, report.failures)
         if self.state in IDLE_STATES:
             target = GUIState.IDLE if report.passed else GUIState.NOT_READY
             if target is not self.state or changed:
                 await self.set_state(target, failures=report.failures)
+
+    async def _optional_module_checks(self, report: HealthReport) -> None:
+        vt = self.cfg.virustotal
+        if vt.enabled and self.vt is None:
+            # Key could not be resolved at start-up. Mandatory VT cannot inspect anything.
+            (report.failures if vt.role is EngineRole.MANDATORY else report.warnings).append("virustotal_unavailable")
+        if self.cfg.quarantine.quarantine_on_threat:
+            try:
+                if self.quarantine is None:
+                    raise QuarantineUnavailable("not_configured")
+                await asyncio.to_thread(self.quarantine.verify)
+            except QuarantineUnavailable as exc:
+                report.warnings.append("quarantine_unavailable")
+                report.details["quarantine_error"] = exc.reason
+        if self.alerts is not None and self.alerts.unavailable:
+            report.warnings.append("alert_channel_unavailable")
+            report.details["alert_channels_unavailable"] = list(self.alerts.unavailable)
 
     async def recover_interrupted(self) -> None:
         stale = self.sink.take_stale_marker()
@@ -216,7 +247,7 @@ class Orchestrator:
         scan = ScanSession(self.cfg, self.broker, self.clamd, self.publish, scan_id=act.scan_id,
                            session_id=act.session_id, sysfs_path=act.sysfs_path,
                            read_temp=lambda: read_cpu_temp(self.cfg.orchestrator.thermal_zone_path),
-                           yara=self.yara)
+                           yara=self.yara, vt=self.vt)
         committed = False
         try:
             await self.set_state(GUIState.VALIDATING, act.scan_id)
@@ -242,8 +273,10 @@ class Orchestrator:
 
             await self.set_state(GUIState.EVALUATING, act.scan_id)
             result = scan.finalize(interrupted=bool(extra), extra_reasons=extra)
-            await self._commit(act, result)
+            await self._commit(act, result, scan)
             committed = True
+            if self.quarantine is not None and result.verdict is Verdict.THREAT:
+                await self._quarantine(act, scan, result)
 
             if self._hold_applies(result):
                 await self._operator_hold(act)
@@ -260,11 +293,41 @@ class Orchestrator:
         finally:
             self.sink.clear_active()
 
-    async def _commit(self, act: ActiveDevice, result: ScanResult) -> None:
+    async def _commit(self, act: ActiveDevice, result: ScanResult, scan: ScanSession) -> None:
         act.result = result
         self.last_result = result
         await self.sink.commit_result(result)
         self._broadcast(ScanEvent(EventType.VERDICT, act.scan_id, self.gui_verdict_payload(result)))
+        if self.alerts is not None:                      # asynchronous; never blocks the eject
+            self.alerts.on_result(result, scan.device.__dict__)
+
+    async def _quarantine(self, act: ActiveDevice, scan: ScanSession, result: ScanResult) -> None:
+        """Retain high-severity evidence (spec §3.6). Failures are recorded, never fatal."""
+        assert self.quarantine is not None
+        items = scan.evidence()
+        payload: dict[str, Any]
+        if not items:
+            payload = {"status": "nothing_to_store"}
+        else:
+            try:
+                outcomes = await asyncio.to_thread(self.quarantine.store, act.scan_id, result.verdict.value, items)
+                counts: dict[str, int] = {}
+                for o in outcomes:
+                    counts[o.status] = counts.get(o.status, 0) + 1
+                payload = {"status": "completed" if counts.get("stored") else "failed", "outcomes": counts,
+                           "item_ids": [o.item_id for o in outcomes if o.item_id]}
+            except QuarantineUnavailable as exc:
+                payload = {"status": "unavailable", "reason": exc.reason}
+            except (OSError, ValueError) as exc:
+                log.error("quarantine failed: %s", type(exc).__name__)
+                payload = {"status": "failed", "reason": type(exc).__name__}
+        await self.publish(ScanEvent(EventType.QUARANTINE_RESULT, act.scan_id, payload))
+        try:
+            removed = await asyncio.to_thread(self.quarantine.cleanup)
+            if removed:
+                log.info("quarantine retention: removed %d expired scan directories", removed)
+        except (QuarantineUnavailable, OSError) as exc:
+            log.warning("quarantine retention cleanup failed: %s", type(exc).__name__)
 
     def _hold_applies(self, result: ScanResult) -> bool:
         oh = self.cfg.operator_hold
@@ -343,7 +406,7 @@ class Orchestrator:
         await self._lifecycle(act, DeviceLifecycle.REMOVED)
         if not committed:
             result = scan.finalize(interrupted=True, extra_reasons=["device_removed"])
-            await self._commit(act, result)
+            await self._commit(act, result, scan)
         verdict = act.result.verdict.value if act.result else Verdict.INCOMPLETE.value
         await self.set_state(GUIState.RESULT, act.scan_id, verdict=verdict, safe_to_remove=False, removed=True)
         act.displaying = True
@@ -355,7 +418,7 @@ class Orchestrator:
     async def _finish_rejected(self, act: ActiveDevice, scan: ScanSession, exc: DeviceRejected) -> None:
         released = await self._release_quietly(act, scan)
         result = scan.rejected_result(exc.reason)
-        await self._commit(act, result)
+        await self._commit(act, result, scan)
         await self.publish(ScanEvent(EventType.DEVICE_REJECTED, act.scan_id,
                                      {"reason": exc.reason, "port": act.port}))
         await self.set_state(GUIState.REJECTED, act.scan_id, reason=exc.reason, safe_to_remove=released)
@@ -369,7 +432,7 @@ class Orchestrator:
             scan.facts.appliance_fault = True
             scan.facts.engine_errors.append(f"{type(exc).__name__}"[:100])
             result = scan.finalize(extra_reasons=["appliance_error"])
-            await self._commit(act, result)
+            await self._commit(act, result, scan)
         await self.set_state(GUIState.ERROR, act.scan_id,
                              verdict=(act.result.verdict.value if act.result else Verdict.ERROR.value),
                              reason=getattr(exc, "code", type(exc).__name__), safe_to_remove=released)

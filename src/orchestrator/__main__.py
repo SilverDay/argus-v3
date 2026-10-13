@@ -17,11 +17,14 @@ from src.shared.logging_setup import setup_logging
 from src.shared.sd_notify import notify, watchdog_loop
 from src.shared.secret_refs import SecretError, resolve_secret
 
+from .alerting import build_dispatcher
 from .broker_client import BrokerClient
 from .event_sink import JsonlEventSink
 from .orchestrator import Orchestrator
+from .quarantine import Quarantine
 from .scanner_clamav import ClamdClient
 from .usb_monitor import UsbMonitor
+from .virustotal import VirusTotalClient
 
 log = logging.getLogger("usb-scan.orchestrator")
 
@@ -58,12 +61,22 @@ async def run(cfg, key: bytes) -> None:
     except KeyError:
         group_gid = None
 
+    vt = None
+    if cfg.virustotal.enabled:
+        try:
+            vt = VirusTotalClient(cfg.virustotal, resolve_secret(cfg.virustotal.api_key_ref).decode("utf-8").strip())
+        except Exception as exc:  # health gate reports virustotal_unavailable
+            log.error("VirusTotal client unavailable: %s", type(exc).__name__)
+    quarantine = Quarantine(cfg.quarantine, cfg.station.station_id) if cfg.quarantine.quarantine_on_threat else None
+
     orch: Orchestrator | None = None
+    alerts = build_dispatcher(cfg, lambda ev: orch.publish(ev), resolve_secret)
     server = IPCServer(cfg.orchestrator.state_socket, allowed_uids=clients, group_gid=group_gid,
                        inbound_types=INBOUND_OPERATOR_TYPES,
                        on_message=lambda ev, creds: orch.on_operator_message(ev, creds),
                        on_connect=lambda creds: orch.snapshot(creds))
-    orch = Orchestrator(cfg, broker, clamd, sink, server.broadcast, auth=auth, gui_uids=gui_uids)
+    orch = Orchestrator(cfg, broker, clamd, sink, server.broadcast, auth=auth, gui_uids=gui_uids,
+                        vt=vt, quarantine=quarantine, alerts=alerts)
     await server.start()
 
     await orch.recover_interrupted()
@@ -96,6 +109,9 @@ async def run(cfg, key: bytes) -> None:
         t.cancel()
     if orch.active and orch.active.task and not orch.active.task.done():
         orch.active.task.cancel()
+    await alerts.aclose()
+    if vt is not None:
+        await vt.aclose()
     await server.close()
 
 

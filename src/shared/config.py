@@ -12,6 +12,7 @@ import dataclasses
 import re
 import types
 import typing
+import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -60,6 +61,16 @@ class NtfsDriver(str, Enum):
     """Kernel ntfs3 vs FUSE ntfs-3g (spec FR-USB-05: validate before deployment)."""
     NTFS3 = "ntfs3"
     NTFS_3G = "ntfs-3g"
+
+
+class SmtpSecurity(str, Enum):
+    STARTTLS = "starttls"                 # submission, port 587
+    TLS = "tls"                           # implicit TLS, port 465
+
+
+class AlertSyslogFormat(str, Enum):
+    RFC5424 = "rfc5424"                   # JSON message body
+    CEF = "cef"                           # ArcSight CEF message body
 
 
 class SyslogTransport(str, Enum):
@@ -220,6 +231,12 @@ class VirusTotalConfig:
     rate_limit_per_minute: int = field(default=4, metadata=_range(1, 10_000))
     large_file_hash_budget_mb: int = field(default=4096, metadata=_range(1, 1_000_000))
     request_timeout_seconds: int = field(default=15, metadata=_range(1, 120))
+    # Owner decision (Phase 7): "malicious" engine count thresholds for hash reputation.
+    suspicious_min_malicious: int = field(default=1, metadata=_range(1, 1000))
+    threat_min_malicious: int = field(default=5, metadata=_range(1, 1000))
+    cache_path: str = "/var/lib/usb-scan/db/vt_cache.db"
+    finish_wait_seconds: int = field(default=120, metadata=_range(0, 3600))   # after the local scan
+    ca_file: str = ""                     # optional extra CA bundle; verification is always on
 
 
 @dataclass(frozen=True)
@@ -256,10 +273,57 @@ class AuthConfig:
 @dataclass(frozen=True)
 class QuarantineConfig:
     quarantine_on_threat: bool = False
-    path: str = "/var/lib/usb-scan/quarantine"
+    path: str = "/var/lib/usb-scan/quarantine"    # must be the mount point of a LUKS2 mapping
     retention_days: int = field(default=30, metadata=_range(1, 3650))
     min_free_mb: int = field(default=1024, metadata=_range(1, 1_000_000))
-    export_enabled: bool = False
+    max_file_size_mb: int = field(default=2047, metadata=_range(1, 1_000_000))
+    max_files_per_scan: int = field(default=50, metadata=_range(1, 10_000))
+    export_enabled: bool = False          # not implemented: must stay false (spec §3.6)
+
+
+@dataclass(frozen=True)
+class WebhookAlertConfig:
+    enabled: bool = False
+    url: str = ""                         # https:// only
+    token_ref: str = field(default="", metadata=_secret_ref())   # sent as "Authorization: Bearer"
+    timeout_seconds: int = field(default=10, metadata=_range(1, 120))
+    retry_delay_seconds: int = field(default=5, metadata=_range(0, 300))
+    ca_file: str = ""
+
+
+@dataclass(frozen=True)
+class EmailAlertConfig:
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = field(default=587, metadata=_range(1, 65535))
+    security: SmtpSecurity = SmtpSecurity.STARTTLS
+    username: str = ""
+    password_ref: str = field(default="", metadata=_secret_ref())
+    from_addr: str = ""
+    to_addrs: tuple[str, ...] = ()
+    timeout_seconds: int = field(default=20, metadata=_range(1, 120))
+    ca_file: str = ""
+
+
+@dataclass(frozen=True)
+class SyslogAlertConfig:
+    enabled: bool = False
+    host: str = ""
+    port: int = field(default=6514, metadata=_range(1, 65535))
+    format: AlertSyslogFormat = AlertSyslogFormat.RFC5424
+    timeout_seconds: int = field(default=10, metadata=_range(1, 120))
+    ca_file: str = ""                     # TLS only (RFC 5425); server certificate always verified
+
+
+@dataclass(frozen=True)
+class AlertsConfig:
+    # Spec §3.7 default alert set; NOT_READY covers health-gate failures.
+    verdicts: tuple[Verdict, ...] = (Verdict.THREAT, Verdict.SUSPICIOUS, Verdict.INCOMPLETE,
+                                     Verdict.ERROR, Verdict.REJECTED)
+    not_ready: bool = True
+    webhook: WebhookAlertConfig = WebhookAlertConfig()
+    email: EmailAlertConfig = EmailAlertConfig()
+    syslog: SyslogAlertConfig = SyslogAlertConfig()
 
 
 @dataclass(frozen=True)
@@ -318,6 +382,7 @@ class Config:
     pin: PinConfig = PinConfig()
     auth: AuthConfig = AuthConfig()
     quarantine: QuarantineConfig = QuarantineConfig()
+    alerts: AlertsConfig = AlertsConfig()
     admin_web: AdminWebConfig = AdminWebConfig()
     logging: LoggingConfig = LoggingConfig()
     events: EventsConfig = EventsConfig()
@@ -449,6 +514,12 @@ def validate(cfg: Config) -> None:
             errors.append("virustotal.role=mandatory requires network_outage_policy_ref (documented outage policy)")
     if vt.enabled and not vt.api_key_ref:
         errors.append("virustotal.enabled=true requires virustotal.api_key_ref")
+    if vt.threat_min_malicious < vt.suspicious_min_malicious:
+        errors.append("virustotal.threat_min_malicious must be >= suspicious_min_malicious")
+    for name in ("cache_path", "ca_file"):
+        value = getattr(vt, name)
+        if value and (not value.startswith("/") or ".." in value.split("/")):
+            errors.append(f"virustotal.{name}: must be an absolute path without '..'")
 
     y = cfg.yara
     if y.role is EngineRole.MANDATORY and not y.enabled:
@@ -489,8 +560,19 @@ def validate(cfg: Config) -> None:
     if not cfg.pin.hash_ref:
         errors.append("pin.hash_ref is required")
 
-    if cfg.quarantine.export_enabled and not cfg.quarantine.quarantine_on_threat:
-        errors.append("quarantine.export_enabled requires quarantine.quarantine_on_threat")
+    q = cfg.quarantine
+    if q.export_enabled:
+        # Spec §3.6: exports need admin step-up auth, warnings, a secure destination and an
+        # audited transfer flow. None of that exists yet, so exports cannot be enabled.
+        errors.append("quarantine.export_enabled: quarantine export is not implemented and must stay false")
+    if q.quarantine_on_threat:
+        if not q.path.startswith("/") or ".." in q.path.split("/") or q.path.rstrip("/") == "":
+            errors.append("quarantine.path: must be an absolute path without '..'")
+        mounts = cfg.broker.mounts_dir.rstrip("/") + "/"
+        if (q.path.rstrip("/") + "/").startswith(mounts) or mounts.startswith(q.path.rstrip("/") + "/"):
+            errors.append("quarantine.path must not overlap broker.mounts_dir (never write to USB media)")
+
+    _validate_alerts(cfg.alerts, errors)
 
     if cfg.logging.level.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         errors.append("logging.level must be DEBUG/INFO/WARNING/ERROR/CRITICAL")
@@ -508,6 +590,40 @@ def validate(cfg: Config) -> None:
 
     if errors:
         raise ConfigError("invalid configuration:\n  - " + "\n  - ".join(errors))
+
+
+_EMAIL = re.compile(r"[^@\s<>\"',;]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}))*\.?|\[?[0-9A-Fa-f:.]+\]?")
+
+
+def _validate_alerts(a: AlertsConfig, errors: list[str]) -> None:
+    bad = [v.value for v in a.verdicts if v in (Verdict.CLEAN, Verdict.NOT_READY)]
+    if bad:
+        errors.append(f"alerts.verdicts: {bad} not allowed (CLEAN never alerts; use alerts.not_ready)")
+    for section in ("webhook", "email", "syslog"):
+        ca = getattr(a, section).ca_file
+        if ca and (not ca.startswith("/") or ".." in ca.split("/")):
+            errors.append(f"alerts.{section}.ca_file: must be an absolute path without '..'")
+    w = a.webhook
+    if w.enabled:
+        parts = urllib.parse.urlsplit(w.url)
+        if parts.scheme != "https" or not parts.hostname:
+            errors.append("alerts.webhook.url: must be an https:// URL")
+        elif parts.username or parts.password:
+            errors.append("alerts.webhook.url: credentials in the URL are not allowed (use token_ref)")
+    e = a.email
+    if e.enabled:
+        if not e.smtp_host or not _HOST.fullmatch(e.smtp_host):
+            errors.append("alerts.email.smtp_host: a host name is required")
+        if not _EMAIL.fullmatch(e.from_addr):
+            errors.append("alerts.email.from_addr: invalid address")
+        if not e.to_addrs or not all(_EMAIL.fullmatch(t) for t in e.to_addrs):
+            errors.append("alerts.email.to_addrs: one or more valid addresses required")
+        if bool(e.username) != bool(e.password_ref):
+            errors.append("alerts.email: username and password_ref must be set together")
+    s = a.syslog
+    if s.enabled and (not s.host or not _HOST.fullmatch(s.host)):
+        errors.append("alerts.syslog.host: a host name is required")
 
 
 def load_config_from_dict(data: Any) -> Config:

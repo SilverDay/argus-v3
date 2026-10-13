@@ -1,6 +1,6 @@
 # USB Scan Station — Software Specification
 
-**Version:** 1.5.2 DRAFT  
+**Version:** 1.5.3 DRAFT  
 **Date:** 13 October 2026  
 **Baseline:** v1.5 DRAFT (13 October 2026)  
 **Target hardware:** Raspberry Pi 5 (8 GB RAM), High-Endurance/Industrial microSD, Pi 5 Active Cooler  
@@ -446,7 +446,8 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | 1.4 DRAFT | 13 October 2026 | Resolved Hardware BOM (office configuration, 27W PSU, Active cooler); standardized on High-Endurance microSD with OverlayFS script architecture (A/B updates abandoned); locked USBGuard class enforcement and hardened scanner namespace access. |
 | 1.5 DRAFT | 13 October 2026 | Final review findings applied: stripped review annotations; resolved §9.2/§15.2 mTLS contradiction; added missing acceptance criteria (NOT_READY, USBGuard policy-layer rejection, coverage metrics, REJECTED, PIN lockout persistence, synthetic fixture); added randomized PIN keypad requirement; specified YARA file delivery and kill-on-timeout behavior; defined `operator_hold` semantics; added update-window power-loss risk; added MTTR/watchdog NFR; clarified bcrypt vs Argon2id scope; added NTFS/exFAT driver validation note; clarified mount namespace model; added Wi-Fi policy scope note; disambiguated v1.3/v1.4 same-day revision. |
 | 1.5.1 DRAFT | 13 October 2026 | Implementation-driven owner decisions: host-namespace mount model with BLKROSET, verified mounts and broker-confined `openat2` opens (replaces per-session namespace + `ReadOnlyPaths` drop-in, §3.2/§5.4); ClamAV via `FILDES` with mandatory limit/encryption alerts; explicit partition-type exclusion policy (FR-USB-04); `network_outage_policy_ref` for mandatory VirusTotal; environment secrets development-only; lockout clock-jump handling (§10.1); blocked-extension default severity SUSPICIOUS (§15.2 #6). |
-| **1.5.2 DRAFT** | **13 October 2026** | YARA worker (owner decisions): descriptor delivery instead of mount access, per-session child with supervisor-side budget kill, minisign-signed manifest with rollback guard (§7.3), `yara.max_file_size_mb` default 256 (§3.2 step 6, §5.4). |
+| 1.5.2 DRAFT | 13 October 2026 | YARA worker (owner decisions): descriptor delivery instead of mount access, per-session child with supervisor-side budget kill, minisign-signed manifest with rollback guard (§7.3), `yara.max_file_size_mb` default 256 (§3.2 step 6, §5.4). |
+| **1.5.3 DRAFT** | **13 October 2026** | Optional modules (owner decisions): VirusTotal reputation thresholds — ≥ `suspicious_min_malicious` (default 1) engines "malicious" → SUSPICIOUS, ≥ `threat_min_malicious` (default 5) → THREAT (§3.2 step 7); quarantine retains THREAT-level (high-severity) detections only, on a verified LUKS2 mount, and quarantine export stays disabled until the step-up/audited flow exists (§3.2 step 9, §3.6); alert channels webhook (https), e-mail (STARTTLS/TLS) and syslog over TLS (RFC 5424 JSON or CEF) with interim best-effort delivery until the events-service queue (§3.7). |
 
 ### 15.2 Implementation Decisions Still Requiring Prototype or Owner Approval
 

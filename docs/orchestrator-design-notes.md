@@ -51,8 +51,74 @@ partitions are never excluded. Partition type comes from libblkid `PART_ENTRY_TY
 - PIN lockout clock jumps: boot-clock based within a boot; after a reboot with the wall
   clock behind the record, re-armed once (≤ one extra lockout period).
 
+## Optional modules (Phase 7, spec 1.5.3)
+
+### VirusTotal (`src/orchestrator/virustotal.py`)
+- Hash-only `GET https://www.virustotal.com/api/v3/files/{sha256}` with the `X-Apikey`
+  header (verified against the official vt-py client source). No uploads.
+- 200 → `data.attributes.last_analysis_stats`; 404 with error code `NotFoundError` →
+  hash unknown (no finding). Every other answer (429 quota, 401/403, 5xx, redirects,
+  unexpected bodies, transport errors) is a lookup failure. The exact VT quota error code
+  was not verifiable offline, so classification does not depend on it: any failure opens a
+  per-session circuit breaker (remaining hashes are answered from the cache only).
+- Owner decision: ≥ `suspicious_min_malicious` (1) "malicious" engines → SUSPICIOUS
+  (medium), ≥ `threat_min_malicious` (5) → THREAT (high). Only the `malicious` count is used.
+- Every in-scope file is hashed from the descriptor that was scanned (no re-open), including
+  files too large for ClamAV (hash lookups have no size threshold). `large_file_hash_budget_mb`
+  is a per-scan hashing budget; files beyond it are reported (`virustotal_hash_budget=N`).
+- `vt_complete` is true only if every in-scope file was hashed and answered, no failure
+  occurred and lookups finished within `finish_wait_seconds` after the local scan.
+  Advisory role: never changes the verdict (reason codes only). Mandatory role: incomplete
+  coverage → INCOMPLETE; with `on_quota_or_network_failure: error` a lookup failure or a
+  missing client → ERROR. A mandatory VT whose API key cannot be resolved fails the health
+  gate (`virustotal_unavailable` → NOT_READY); advisory gives a warning.
+- Cache: SQLite (0600), known hashes `cache_ttl_days`, unknown hashes at most 1 day,
+  entries with timestamps in the future (clock jump) are ignored; TTL 0 disables it.
+- Rate limit: sliding 60 s window shared by all sessions; two lookup workers per scan.
+- `httpx` request logging is raised to WARNING so hashes are not logged per request.
+
+### Quarantine (`src/orchestrator/quarantine.py`)
+- Owner decision: only high-severity detections with a known SHA-256 (ClamAV signature,
+  high YARA rule, VT ≥ threat threshold). Never policy violations or medium/low findings.
+- Runs after the verdict is committed and before ejection (mounts still present); the file
+  is re-opened (direct or broker-confined), copied while hashing, and kept only if the
+  SHA-256 equals the detected hash. Failures produce a `quarantine_result` event and never
+  change the verdict.
+- Store verified before every use: `quarantine.path` is the topmost mount point, mounted
+  `rw,nodev,nosuid,noexec`, its device is a dm mapping whose `dm/uuid` starts with
+  `CRYPT-LUKS2-` (cryptsetup dm UUID format, verified in cryptsetup `lib/libdevmapper.c`),
+  directory owned by the service user with mode 0700, not a symlink. LUKS2 must be the
+  device directly under the filesystem (LVM on LUKS is rejected).
+- Layout `<path>/<scan_id>/<random 128-bit hex>.bin|.json`, files 0600; original path,
+  device IDs and signature only in the sidecar. All writes are `dir_fd`-relative with
+  `O_NOFOLLOW|O_EXCL`. Config validation rejects a quarantine path overlapping
+  `broker.mounts_dir`. Retention cleanup (fd-based `shutil.rmtree`) touches only
+  UUID-named scan directories.
+- `quarantine.export_enabled: true` is rejected by config validation (spec §3.6 needs
+  admin step-up, warnings, a secure destination and an audited flow — not built yet).
+- The quarantine LUKS2 volume, its key handling and unlock at boot are Phase 10 work.
+
+### Alerting (`src/orchestrator/alerting.py`)
+- Verdict alerts after commit (`alerts.verdicts`, default THREAT/SUSPICIOUS/INCOMPLETE/
+  ERROR/REJECTED); `alerts.not_ready` alerts when a health gate starts failing.
+- Channels are independent (`gather(..., return_exceptions=True)`); each outcome is an
+  `alert_delivery` event with an error class only (no exception text, URLs or secrets).
+- Webhook: https only, no redirects, optional bearer token from a secret ref, one retry
+  after `retry_delay_seconds`. E-mail: STARTTLS is mandatory in `starttls` mode
+  (`SMTPNotSupportedError` if not offered) or implicit TLS; header values cannot contain
+  CR/LF (validated + `EmailMessage` refuses them). Syslog: TLS only, RFC 5425 octet-counting
+  framing, RFC 5424 header (facility local0) with a JSON or CEF body.
+- TLS verification checked against a local self-signed server: rejected with the system
+  trust store, delivered only when the CA is configured via `ca_file`.
+- Privacy: paths and device serials follow `logging.filename_privacy`; `hash` uses
+  HMAC-SHA256 with `pseudonymization_key_ref` and omits the value if no key is available.
+- Interim delivery is best effort (in-memory task). The durable, acknowledged queue with
+  retries and ordering (spec §3.2 step 12) is implemented by the events service in Phase 8.
+
 ## Still to validate on the Pi
 - vfat/exfat/ntfs3 mounts (this CI kernel only supports ext4).
 - `PART_ENTRY_TYPE` on real partition devices (CI cannot create loop partitions).
 - pyudev event timing for insertion/removal (FR-USB-01 2 s target).
 - FILDES throughput and `clamav.concurrency` on Pi 5 (spec §15.2 #1).
+- Quarantine on a real LUKS2 volume (`dm/uuid`, mount options, unlock at boot).
+- VirusTotal lookups against the live API (quota answers, latency) once network policy allows.

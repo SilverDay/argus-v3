@@ -116,6 +116,8 @@ class EventType(str, Enum):
     OPERATOR_HOLD_EXITED = "operator_hold_exited"
     AUTH_RESULT = "auth_result"
     LOCKOUT_STATE = "lockout_state"
+    QUARANTINE_RESULT = "quarantine_result"      # no paths in the payload (protected sidecar only)
+    ALERT_DELIVERY = "alert_delivery"
     # Clients -> orchestrator (restricted operator RPC)
     OPERATOR_PIN_SUBMIT = "operator_pin_submit"
     OPERATOR_ACK = "operator_ack"

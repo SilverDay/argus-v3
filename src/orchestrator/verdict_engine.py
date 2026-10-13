@@ -2,7 +2,8 @@
 
 Precedence (highest first):
   1. THREAT      — any high-severity detection or high-severity policy violation
-  2. ERROR       — appliance/engine fault prevented reliable processing
+  2. ERROR       — appliance/engine fault prevented reliable processing, or a mandatory
+                   engine failed with on_quota_or_network_failure=error (VirusTotal)
   3. INCOMPLETE  — anything required was not inspected (engines, partitions, files, limits)
   4. SUSPICIOUS  — medium/low detections or medium-severity policy violations
   5. CLEAN       — everything required inspected by all mandatory engines, nothing found
@@ -23,6 +24,7 @@ class ScanFacts:
     policy_violations: list[str] = field(default_factory=list)
     engine_errors: list[str] = field(default_factory=list)
     appliance_fault: bool = False        # e.g. clamd unreachable, thermal halt
+    engine_failures: list[str] = field(default_factory=list)   # required engine failed, policy = error
     interrupted: bool = False            # device removed / global timeout / cancelled
     restricted_scope: bool = False
 
@@ -41,6 +43,8 @@ def evaluate(facts: ScanFacts, cfg: Config) -> tuple[Verdict, list[str]]:
 
     if facts.appliance_fault:
         return Verdict.ERROR, ["appliance_fault", *facts.engine_errors[:5]]
+    if facts.engine_failures:
+        return Verdict.ERROR, ["required_engine_failed", *facts.engine_failures[:5]]
 
     incomplete = _incomplete_reasons(facts, cfg)
     if incomplete:

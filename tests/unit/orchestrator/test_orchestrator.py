@@ -488,3 +488,88 @@ async def test_policy_never_excludes_signatures_or_large_partitions(harness, env
     await start(orch)
     await run_scan(orch)
     assert verdicts(events)[0]["verdict"] == "INCOMPLETE"
+
+
+# --- YARA (Phase 4) ------------------------------------------------------------
+
+from tests.unit.orchestrator.fakes import FakeYaraClient  # noqa: E402
+
+YARA_ON = {"yara": {"enabled": True, "role": "mandatory"}}
+YARA_ADVISORY = {"yara": {"enabled": True, "role": "advisory"}}
+
+
+def with_yara(harness, cfg, client):
+    orch, broker, clamd, events, sink = harness(cfg)
+    orch.yara = client
+    return orch, broker, clamd, events, sink
+
+
+async def test_yara_clean_complete(harness):
+    client = FakeYaraClient()
+    orch, *_, events, sink = with_yara(harness, YARA_ON, client)
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == "CLEAN" and v["coverage"]["yara_complete"] is True
+    assert client.scanned == 2
+    assert "yara_rules=7:abcdef0123456789" in committed(sink)[-1]["reason_codes"]
+
+
+@pytest.mark.parametrize("marker,verdict", [(b"YHIGH", "THREAT"), (b"YMED", "SUSPICIOUS")])
+async def test_yara_match_severity(harness, env, marker, verdict):
+    (env["part1"] / "doc.bin").write_bytes(marker)
+    orch, *_, events, sink = with_yara(harness, YARA_ON, FakeYaraClient())
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == verdict
+    assert v["threats"][0]["engine"] == "yara"
+    full = committed(sink)[-1]["threats"][0]
+    assert full["file_path"] == "part1/doc.bin" and len(full["sha256"]) == 64
+
+
+@pytest.mark.parametrize("cfg,verdict", [(YARA_ON, "INCOMPLETE"), (YARA_ADVISORY, "CLEAN")])
+async def test_yara_timeout_by_role(harness, env, cfg, verdict):
+    (env["part1"] / "slow.bin").write_bytes(b"YTIME")
+    orch, *_, events, sink = with_yara(harness, cfg, FakeYaraClient())
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == verdict and v["coverage"]["yara_complete"] is False
+    assert "yara_timeout=1" in committed(sink)[-1]["reason_codes"]
+
+
+@pytest.mark.parametrize("cfg,verdict", [(YARA_ON, "INCOMPLETE"), (YARA_ADVISORY, "CLEAN")])
+async def test_yara_worker_dies_mid_scan(harness, env, cfg, verdict):
+    (env["part1"] / "boom.bin").write_bytes(b"YDIE")
+    orch, *_, events, sink = with_yara(harness, cfg, FakeYaraClient())
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == verdict
+    assert any(r.startswith("yara_unavailable:worker_disconnected") for r in committed(sink)[-1]["reason_codes"])
+
+
+async def test_yara_mandatory_unavailable_not_ready(harness):
+    orch, *_ = with_yara(harness, YARA_ON, FakeYaraClient(available=False))
+    await orch.check_health()
+    assert orch.state is GUIState.NOT_READY and "yara_unavailable" in orch.health.failures
+
+
+async def test_yara_advisory_unavailable_is_warning_only(harness):
+    orch, *_, events, sink = with_yara(harness, YARA_ADVISORY, FakeYaraClient(available=False))
+    await start(orch)
+    assert "yara_unavailable" in orch.health.warnings
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == "CLEAN" and v["coverage"]["yara_complete"] is False
+
+
+async def test_yara_budget_exceeded_incomplete(harness):
+    orch, *_, events, sink = with_yara(harness, YARA_ON, FakeYaraClient())
+    object.__setattr__(orch.cfg.yara, "global_budget_seconds", -1)   # already exhausted
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == "INCOMPLETE"
+    assert "yara_budget_exceeded" in committed(sink)[-1]["reason_codes"]

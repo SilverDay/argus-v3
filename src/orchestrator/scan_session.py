@@ -18,13 +18,15 @@ from typing import Any
 
 from src.shared.config import Config, normalise_partition_type
 from src.shared.models import (
-    CoverageMetrics, EventType, ScanEvent, ScanMetadata, ScanResult, SkipReason, ThreatEntry, Verdict, utc_now,
+    CoverageMetrics, EventType, ScanEvent, ScanMetadata, ScanResult, Severity, SkipReason, ThreatEntry, Verdict,
+    utc_now,
 )
 
 from . import inventory
 from .broker_client import BrokerClient, BrokerError
 from .policy import ExtensionPolicy
 from .scanner_clamav import ClamdClient, ClamdUnavailable, ClamResult, ClamStatus, open_for_scan
+from .scanner_yara_client import YaraClient, YaraResult, YaraSession, YaraUnavailable
 from .verdict_engine import ScanFacts, evaluate
 
 log = logging.getLogger(__name__)
@@ -81,8 +83,15 @@ def _sha256_fd(fd: int, limit: int) -> str:
 class ScanSession:
     def __init__(self, cfg: Config, broker: BrokerClient, clamd: ClamdClient, publish: Publish, *,
                  scan_id: str, session_id: str, sysfs_path: str,
-                 read_temp: Callable[[], float | None] = lambda: None) -> None:
+                 read_temp: Callable[[], float | None] = lambda: None,
+                 yara: YaraClient | None = None) -> None:
         self.cfg = cfg
+        self.yara = yara if cfg.yara.enabled else None
+        self._yara_session: YaraSession | None = None
+        self._yara_scanned = 0
+        self._yara_issues: dict[str, int] = {}
+        self._yara_elapsed = 0.0
+        self._yara_unavailable: str | None = None
         self.broker = broker
         self.clamd = clamd
         self.publish = publish
@@ -153,6 +162,15 @@ class ScanSession:
 
     async def scan(self) -> None:
         """Inventory and scan every mounted volume. Cancellation leaves partial facts."""
+        if self.cfg.yara.enabled:
+            await self._open_yara()
+        try:
+            await self._scan_volumes()
+        finally:
+            if self._yara_session is not None:
+                await self._yara_session.bye()
+
+    async def _scan_volumes(self) -> None:
         cov = self.facts.coverage
         sem = asyncio.Semaphore(self.cfg.clamav.concurrency)
         for pid, path in self.mounts:
@@ -208,8 +226,9 @@ class ScanSession:
                 return
             try:
                 result = await self.clamd.scan_fd(fd, float(self.cfg.clamav.per_file_timeout_seconds))
+                yres = await self._yara_scan(fd)
                 sha = ""
-                if result.status is ClamStatus.FOUND:
+                if result.status is ClamStatus.FOUND or (yres is not None and yres.status == "match"):
                     sha = await asyncio.to_thread(self._safe_sha256, fd)
             except ClamdUnavailable as exc:
                 self.facts.appliance_fault = True
@@ -219,6 +238,55 @@ class ScanSession:
             finally:
                 os.close(fd)
         await self._record(pid, entry, result, sha)
+        if yres is not None:
+            await self._record_yara(pid, entry, yres, sha)
+
+    # --- YARA (isolated worker, spec §3.2 step 6) -----------------------------
+
+    async def _open_yara(self) -> None:
+        if self.yara is None:
+            self._yara_unavailable = "yara_client_missing"
+            return
+        try:
+            self._yara_session = await self.yara.session()
+            self.notes.append(f"yara_rules={self._yara_session.rules_version}")
+        except YaraUnavailable as exc:
+            self._yara_unavailable = f"yara_unavailable:{exc.reason}"
+
+    def _yara_lost(self, reason: str) -> None:
+        if self._yara_unavailable is None:
+            self._yara_unavailable = reason
+        if self._yara_session is not None:
+            self._yara_session.close()
+            self._yara_session = None
+
+    async def _yara_scan(self, fd: int) -> YaraResult | None:
+        """Scan the same descriptor with YARA; None if YARA is off or no longer usable."""
+        if self._yara_session is None:
+            return None
+        if self._yara_elapsed > self.cfg.yara.global_budget_seconds:
+            self._yara_lost("yara_budget_exceeded")      # worker kills its child on disconnect/budget
+            return None
+        started = time.monotonic()
+        try:
+            return await self._yara_session.scan_fd(fd)
+        except YaraUnavailable as exc:
+            self._yara_lost(f"yara_unavailable:{exc.reason}")
+            return None
+        finally:
+            self._yara_elapsed += time.monotonic() - started
+
+    async def _record_yara(self, pid: str, entry: inventory.FileEntry, res: YaraResult, sha: str) -> None:
+        if res.status in ("clean", "match"):
+            self._yara_scanned += 1
+        else:
+            self._yara_issues[res.status] = self._yara_issues.get(res.status, 0) + 1
+        for m in res.matches:
+            sev = {"high": Severity.HIGH, "low": Severity.LOW}.get(str(m.get("severity")), Severity.MEDIUM)
+            sig = f"{m.get('namespace', '')}.{m.get('rule', '')}"[:200]
+            self.facts.threats.append(ThreatEntry(f"{pid}/{inventory.display_path(entry.rel)}", "yara", sig, sha, sev))
+            await self.publish(ScanEvent(EventType.DETECTION, self.scan_id,
+                                         {"engine": "yara", "signature": sig, "severity": sev.value}))
 
     async def _record(self, pid: str, entry: inventory.FileEntry, result: ClamResult, sha: str = "") -> None:
         cov = self.facts.coverage
@@ -300,6 +368,15 @@ class ScanSession:
             and cov.files_scanned == self._in_scope
             and not any(n for r, n in cov.skip_reasons.items() if r is not SkipReason.POLICY_EXCLUSION)
         )
+        if self.cfg.yara.enabled:
+            cov.yara_complete = (
+                self._yara_unavailable is None and not self._yara_issues
+                and not self.facts.appliance_fault and not self.facts.interrupted
+                and self._yara_scanned == self._in_scope
+            )
+            if self._yara_unavailable:
+                self.notes.append(self._yara_unavailable)
+            self.notes.extend(f"yara_{k}={v}" for k, v in sorted(self._yara_issues.items()))
         verdict, reasons = evaluate(self.facts, self.cfg)
         self.metadata.session_end_utc = utc_now()
         return ScanResult(

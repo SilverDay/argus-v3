@@ -162,12 +162,20 @@ class ClamAVConfig:
 class YaraConfig:
     enabled: bool = False
     role: EngineRole = EngineRole.ADVISORY
+    # Ruleset bundle directory: rule files + manifest.json (version, SHA-256 per file),
+    # signed with minisign (manifest.json.minisig) against trust_anchor_path (public key).
     rules_path: str = "/var/lib/usb-scan/rules/active"
-    ruleset_signature_path: str = ""
-    trust_anchor_path: str = ""
+    ruleset_signature_path: str = "/var/lib/usb-scan/rules/active/manifest.json.minisig"
+    trust_anchor_path: str = "/etc/usb-scan/yara-rules.pub"
+    minisign_path: str = "/usr/bin/minisign"
+    state_dir: str = "/var/lib/usb-scan/yara-state"      # last accepted ruleset version (rollback guard)
+    socket_path: str = "/run/usb-scan/yara.sock"
+    client_user: str = "usbscan"                          # only this uid may connect (SO_PEERCRED)
+    socket_group: str = "usbscan"                         # socket 0660 yarascan:<group>
     per_file_timeout_seconds: int = field(default=60, metadata=_range(1, 3600))
     global_budget_seconds: int = field(default=1800, metadata=_range(10, 86_400))
     memory_limit_mb: int = field(default=1024, metadata=_range(64, 8192))
+    max_file_size_mb: int = field(default=256, metadata=_range(1, 2047))
 
 
 @dataclass(frozen=True)
@@ -405,11 +413,19 @@ def validate(cfg: Config) -> None:
         errors.append("virustotal.enabled=true requires virustotal.api_key_ref")
 
     y = cfg.yara
-    if y.role is EngineRole.MANDATORY:
-        if not y.enabled:
-            errors.append("yara.role=mandatory requires yara.enabled=true")
-        if not (y.rules_path and y.ruleset_signature_path and y.trust_anchor_path):
-            errors.append("yara.role=mandatory requires rules_path, ruleset_signature_path and trust_anchor_path")
+    if y.role is EngineRole.MANDATORY and not y.enabled:
+        errors.append("yara.role=mandatory requires yara.enabled=true")
+    if y.enabled:
+        # Spec §7.3: rules are only activated from a signed bundle, whatever the role.
+        for name in ("rules_path", "ruleset_signature_path", "trust_anchor_path", "minisign_path",
+                     "state_dir", "socket_path"):
+            value = getattr(y, name)
+            if not value.startswith("/") or ".." in value.split("/"):
+                errors.append(f"yara.{name}: must be an absolute path without '..'")
+        if y.max_file_size_mb * 2 > y.memory_limit_mb:
+            errors.append("yara.memory_limit_mb must be at least twice yara.max_file_size_mb")
+        if y.per_file_timeout_seconds >= y.global_budget_seconds:
+            errors.append("yara.per_file_timeout_seconds must be below yara.global_budget_seconds")
 
     if cfg.auth.web.oidc_enabled and not cfg.auth.web.require_mfa:
         errors.append("auth.web.require_mfa must be true when OIDC is enabled")

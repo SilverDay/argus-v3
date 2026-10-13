@@ -12,9 +12,9 @@ Plan: docs/USB-Scan-Station-Implementation-Plan-v1.5.md
   root-owned Unix socket. The orchestrator NEVER calls udisks2 or mounts directly.
 - `src/orchestrator/` — Scan daemon (usbscand). Unprivileged (user: usbscan).
   Coordinates scan pipeline; calls broker via RPC; drives IPC to GUI and events service.
-- `src/yara_worker/` — Isolated YARA scan process (user: yarascan).
-  Receives scan work via its own Unix socket. Has read-only mount namespace access.
-  Killed by orchestrator watchdog on global budget expiry.
+- `src/yara_worker/` — Isolated YARA worker (user: yarascan). NO mount access: receives
+  read-only fds from the orchestrator. Supervisor runs one rlimited child per session and
+  SIGKILLs it on budget expiry. Rules: minisign-signed manifest (docs/yara-worker-design-notes.md).
 - `src/gui/` — PySide6 fullscreen kiosk (user: usbscan-gui). Pure display client.
   Zero scan logic. Subscribes to orchestrator state socket.
 - `src/led/` — GPIO LED controller (group: gpio). lgpio/rpi-lgpio ONLY (NOT RPi.GPIO).
@@ -71,7 +71,7 @@ yara_complete (if enabled), vt_complete (if enabled)
 - Broker RPC:         /run/usb-scan/broker.sock     (0660 root:usbscan, SO_PEERCRED + HMAC)
 - Orchestrator → GUI: /run/usb-scan/state.sock      (0660 usbscan:usbscan-gui)
 - Orchestrator → LED: /run/usb-scan/led.sock        (0660 usbscan:gpio)
-- YARA worker:        /run/usb-scan/yara.sock       (0660 usbscan:yarascan)
+- YARA worker:        /run/usb-scan/yara.sock       (0660 yarascan:usbscan, SO_PEERCRED)
 - Events service:     /run/usb-scan/events.sock     (0660 usbscan:usbscan-events)
 
 ## Test Commands
@@ -89,7 +89,8 @@ pytest tests/acceptance/        # full stack, Pi only
 docs/USB-Scan-Station-Spec-v1.5.md — authoritative. When in doubt, check the spec.
 §3.3 verdict semantics · §3.4 coverage metrics · §3.5 operator_hold ·
 §5.4 service privileges · §6.2 config validation · §8.2 USBGuard/broker · §10.1 PIN
-Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md
+Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md,
+docs/yara-worker-design-notes.md
 
 ## Commit Style
 

@@ -70,13 +70,20 @@ clamav:
 
 yara:
   enabled: false
-  role: advisory                        # mandatory requires signed ruleset + trust anchor
+  role: advisory                        # mandatory: no verified ruleset -> NOT_READY
+  # Signed bundle: rule files + manifest.json (version, sha256 per file) + minisign signature.
   rules_path: /var/lib/usb-scan/rules/active
-  ruleset_signature_path: ""
-  trust_anchor_path: ""
-  per_file_timeout_seconds: 60
-  global_budget_seconds: 1800
-  memory_limit_mb: 1024
+  ruleset_signature_path: /var/lib/usb-scan/rules/active/manifest.json.minisig
+  trust_anchor_path: /etc/usb-scan/yara-rules.pub   # minisign public key
+  minisign_path: /usr/bin/minisign
+  state_dir: /var/lib/usb-scan/yara-state           # rollback guard (last accepted version)
+  socket_path: /run/usb-scan/yara.sock
+  client_user: usbscan
+  socket_group: usbscan
+  per_file_timeout_seconds: 60          # libyara native timeout
+  global_budget_seconds: 1800           # per scan session; worker child killed when exceeded
+  memory_limit_mb: 1024                 # RLIMIT_AS of the per-session worker child
+  max_file_size_mb: 256                 # larger files are not YARA-scanned (reported)
 
 virustotal:
   enabled: false                        # hash-only lookups; no file uploads

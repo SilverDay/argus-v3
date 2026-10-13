@@ -1,7 +1,8 @@
 """Mandatory health gates (spec §3.8, AC-R01). Any failure -> NOT_READY.
 
 Failure codes: broker_unavailable, clamav_unavailable, signatures_unknown,
-signatures_stale, yara_ruleset_missing, disk_space_low, event_store_unwritable,
+signatures_stale, yara_unavailable (mandatory YARA without a verified ruleset or
+reachable worker), disk_space_low, event_store_unwritable,
 clock_invalid, thermal_limit. Warnings (do not block): pin_not_configured,
 thermal_unknown.
 """
@@ -17,6 +18,7 @@ from src.shared.config import Config, EngineRole
 
 from .broker_client import BrokerClient, BrokerError
 from .scanner_clamav import ClamdClient, ClamdUnavailable
+from .scanner_yara_client import YaraClient, YaraUnavailable
 
 
 @dataclass
@@ -39,7 +41,7 @@ def read_cpu_temp(path: str) -> float | None:
 
 
 async def run_checks(cfg: Config, broker: BrokerClient, clamd: ClamdClient, *,
-                     now: float | None = None) -> HealthReport:
+                     yara: YaraClient | None = None, now: float | None = None) -> HealthReport:
     now = time.time() if now is None else now
     rep = HealthReport()
 
@@ -66,9 +68,17 @@ async def run_checks(cfg: Config, broker: BrokerClient, clamd: ClamdClient, *,
     except (ClamdUnavailable, ValueError):
         rep.failures.append("clamav_unavailable")
 
-    if cfg.yara.enabled and cfg.yara.role is EngineRole.MANDATORY:
-        if not all(os.path.exists(p) for p in (cfg.yara.rules_path, cfg.yara.ruleset_signature_path)):
-            rep.failures.append("yara_ruleset_missing")
+    if cfg.yara.enabled:
+        try:
+            if yara is None:
+                raise YaraUnavailable("yara_client_missing")
+            rep.details["yara_rules_version"] = await yara.ping()
+        except YaraUnavailable as exc:
+            rep.details["yara_error"] = exc.reason
+            if cfg.yara.role is EngineRole.MANDATORY:
+                rep.failures.append("yara_unavailable")
+            else:
+                rep.warnings.append("yara_unavailable")
 
     try:
         free_mb = shutil.disk_usage(cfg.station.data_dir).free // (1024 * 1024)

@@ -45,10 +45,14 @@ from src.orchestrator.scan_session import ScanSession
 from src.orchestrator.scanner_clamav import ClamdClient
 from src.shared.config import load_config_from_dict
 from src.orchestrator.broker_client import BrokerClient
+from src.orchestrator.scanner_yara_client import YaraClient
 from tests.unit.orchestrator.fakes import FakeBroker
 
-mount_path, clamd_sock, broker_sock, key_hex = sys.argv[1:5]
-cfg = load_config_from_dict({"clamav": {"socket_path": clamd_sock}})
+mount_path, clamd_sock, broker_sock, key_hex, yara_sock = sys.argv[1:6]
+raw = {"clamav": {"socket_path": clamd_sock}}
+if yara_sock:
+    raw["yara"] = {"enabled": True, "role": "mandatory", "socket_path": yara_sock}
+cfg = load_config_from_dict(raw)
 
 
 class HybridBroker(FakeBroker):
@@ -65,7 +69,8 @@ async def main():
         pass
     s = ScanSession(cfg, HybridBroker(), ClamdClient(clamd_sock), publish,
                     scan_id="s", session_id="0f8fad5b-d9cb-469f-a165-70867728950e",
-                    sysfs_path="/sys/bus/usb/devices/1-1")
+                    sysfs_path="/sys/bus/usb/devices/1-1",
+                    yara=YaraClient(yara_sock) if yara_sock else None)
     await s.validate()
     await s.mount_all()
     await s.scan()
@@ -211,9 +216,11 @@ def volume(tmp_path, broker_harness):
         shutil.rmtree(base, ignore_errors=True)
 
 
-def scan_as_nobody(mount_path: str, clamd_sock: str, broker: "BrokerHarness", broker_up: bool = True) -> dict:
+def scan_as_nobody(mount_path: str, clamd_sock: str, broker: "BrokerHarness", broker_up: bool = True,
+                   yara_sock: str = "") -> dict:
     sock = broker.socket_path if broker_up else "/nonexistent/broker.sock"
-    out = subprocess.run([sys.executable, "-c", SCAN_SCRIPT, mount_path, clamd_sock, sock, broker.key.hex()],
+    out = subprocess.run([sys.executable, "-c", SCAN_SCRIPT, mount_path, clamd_sock, sock, broker.key.hex(),
+                          yara_sock],
                          cwd=ROOT,
                          user=NOBODY, group=NOGROUP, extra_groups=[], capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
@@ -289,3 +296,62 @@ def test_archive_limit_is_incomplete(clamd, volume, tmp_path, broker_harness):
     path = volume({"many.zip": many.read_bytes()})
     r = scan_as_nobody(path, clamd, broker_harness)
     assert r["verdict"] == "INCOMPLETE" and r["coverage"]["skip_reasons"] == {"scan_limit": 1}, r
+
+
+# --- YARA worker end to end (Phase 4) -------------------------------------------
+
+YARA_RULES = {
+    "malware.yar": 'rule usbscan_test_high { meta: severity = "high" strings: $a = "USBSCAN-YARA-TEST-HIGH" condition: $a }',
+}
+
+
+@pytest.fixture
+def yara_worker():
+    """Real supervisor + child processes with a minisign-signed bundle, serving uid nobody."""
+    import threading
+    from src.yara_worker.rules import RuleStore
+    from src.yara_worker.yara_server import YaraServer
+    from tests.unit.yara_worker.bundle import MINISIGN, make_bundle, make_keypair, yara_cfg
+    if MINISIGN is None:
+        pytest.skip("minisign not installed")
+    base = tempfile.mkdtemp(prefix="usbscan-yara-", dir="/tmp")
+    os.chmod(base, 0o755)
+    pub, sec = make_keypair(base)
+    rules = make_bundle(os.path.join(base, "rules"), sec, YARA_RULES, version=1)
+    cfg = yara_cfg(rules, pub, os.path.join(base, "state"), socket_path=os.path.join(base, "yara.sock"))
+    store = RuleStore(cfg)
+    assert store.reload(), store.last_error
+    loop = asyncio.new_event_loop()
+    server = YaraServer(cfg, store, client_uid=NOBODY, socket_gid=NOGROUP)
+    loop.run_until_complete(server.start())
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    yield cfg.socket_path
+    asyncio.run_coroutine_threadsafe(server.close(), loop).result(10)
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(10)
+    loop.close()
+    shutil.rmtree(base, ignore_errors=True)
+
+
+def test_yara_and_clamav_on_hidden_content(clamd, volume, broker_harness, yara_worker):
+    """Mandatory YARA + ClamAV, scanner as nobody, content in a 0700 dir opened via the broker:
+    the YARA worker gets the same broker-confined descriptors and never touches a path."""
+    path = volume({"ok.txt": b"fine\n", "private/marker.bin": b"xx USBSCAN-YARA-TEST-HIGH xx",
+                   "private/eicar.com": EICAR},
+                  modes={"private/marker.bin": 0o600, "private/eicar.com": 0o600},
+                  dir_modes={"private": 0o700}, fs="ext4")
+    r = scan_as_nobody(path, clamd, broker_harness, yara_sock=yara_worker)
+    assert r["verdict"] == "THREAT", r
+    cov = r["coverage"]
+    assert cov["clamav_complete"] is True and cov["yara_complete"] is True, cov
+    engines = sorted((t["engine"], t["signature_name"], t["file_path"]) for t in r["threats"])
+    assert engines == [("clamav", "Test.EICAR.UNOFFICIAL", "part1/private/eicar.com"),
+                       ("yara", "malware.usbscan_test_high", "part1/private/marker.bin")]
+    assert any(rc.startswith("yara_rules=1:") for rc in r["reason_codes"])
+
+
+def test_yara_clean_volume_complete(clamd, volume, broker_harness, yara_worker):
+    path = volume({"hello.txt": b"hello\n"}, fs="ext4")
+    r = scan_as_nobody(path, clamd, broker_harness, yara_sock=yara_worker)
+    assert r["verdict"] == "CLEAN" and r["coverage"]["yara_complete"] is True, r

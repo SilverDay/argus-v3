@@ -1,0 +1,53 @@
+# Isolated YARA worker (spec §5.4). DRAFT — validate on the Pi in Phase 10.
+# The worker never needs USB mounts or the network: it receives file descriptors.
+
+[Unit]
+Description=USB Scan Station YARA worker
+After=usb-scan-device-broker.service
+Before=usb-scan-orchestrator.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=yarascan
+Group=yarascan
+ExecStart=/opt/usb-scan/.venv/bin/python -m src.yara_worker --config /etc/usb-scan/scan_station.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+WorkingDirectory=/opt/usb-scan
+Restart=always
+RestartSec=5
+WatchdogSec=60
+
+StateDirectory=usb-scan/yara-state
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+InaccessiblePaths=-/run/usb-scan/mounts
+ReadOnlyPaths=/var/lib/usb-scan/rules /etc/usb-scan
+ReadWritePaths=/run/usb-scan
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# @resources must stay allowed: the per-session child lowers its own rlimits (setrlimit).
+SystemCallFilter=~@privileged @mount
+UMask=0077
+# Children inherit the cgroup: total memory for supervisor + max_sessions children.
+MemoryMax=2560M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

@@ -75,14 +75,27 @@ def test_vt_mandatory_requires_enabled_and_credential():
     assert "enabled=true" in str(exc.value) and "api_key_ref" in str(exc.value)
 
 
-def test_yara_mandatory_requires_signed_ruleset():
+def test_yara_rules_require_signed_bundle_paths():
     d = template()
-    d["yara"].update(enabled=True, role="mandatory")
-    with pytest.raises(ConfigError, match="ruleset_signature_path"):
+    d["yara"].update(role="mandatory")
+    with pytest.raises(ConfigError, match="enabled=true"):
         load_config_from_dict(d)
-    d["yara"].update(ruleset_signature_path="/var/lib/usb-scan/rules/active.sig",
-                     trust_anchor_path="/etc/usb-scan/yara-trust.pub")
+    d["yara"].update(enabled=True, trust_anchor_path="relative.pub")
+    with pytest.raises(ConfigError, match="trust_anchor_path"):
+        load_config_from_dict(d)
+    d["yara"].update(trust_anchor_path="/etc/usb-scan/yara-rules.pub")
     assert load_config_from_dict(d).yara.role is EngineRole.MANDATORY
+
+
+@pytest.mark.parametrize("change,match", [
+    ({"max_file_size_mb": 600, "memory_limit_mb": 1024}, "twice"),
+    ({"per_file_timeout_seconds": 100, "global_budget_seconds": 60}, "below"),
+])
+def test_yara_resource_rules(change, match):
+    d = template()
+    d["yara"].update(enabled=True, **change)
+    with pytest.raises(ConfigError, match=match):
+        load_config_from_dict(d)
 
 
 def test_oidc_requires_mfa():

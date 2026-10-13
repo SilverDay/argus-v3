@@ -34,6 +34,7 @@ from .event_sink import JsonlEventSink
 from .health import HealthReport, read_cpu_temp, run_checks
 from .scan_session import DeviceRejected, ScanSession
 from .scanner_clamav import ClamdClient
+from .scanner_yara_client import YaraClient
 from .usb_monitor import UsbEvent
 
 log = logging.getLogger(__name__)
@@ -69,6 +70,8 @@ class Orchestrator:
         self.cfg = cfg
         self.broker = broker
         self.clamd = clamd
+        self.yara = YaraClient(cfg.yara.socket_path,
+                               reply_timeout=cfg.yara.per_file_timeout_seconds + 10) if cfg.yara.enabled else None
         self.sink = sink
         self._broadcast = broadcast
         self.auth = auth
@@ -112,7 +115,7 @@ class Orchestrator:
     # --- health -------------------------------------------------------------
 
     async def check_health(self) -> None:
-        report = await run_checks(self.cfg, self.broker, self.clamd)
+        report = await run_checks(self.cfg, self.broker, self.clamd, yara=self.yara)
         changed = report.failures != self.health.failures
         self.health = report
         if changed or self.state is GUIState.STARTING:
@@ -206,7 +209,8 @@ class Orchestrator:
     async def _process(self, act: ActiveDevice) -> None:
         scan = ScanSession(self.cfg, self.broker, self.clamd, self.publish, scan_id=act.scan_id,
                            session_id=act.session_id, sysfs_path=act.sysfs_path,
-                           read_temp=lambda: read_cpu_temp(self.cfg.orchestrator.thermal_zone_path))
+                           read_temp=lambda: read_cpu_temp(self.cfg.orchestrator.thermal_zone_path),
+                           yara=self.yara)
         committed = False
         try:
             await self.set_state(GUIState.VALIDATING, act.scan_id)

@@ -101,3 +101,47 @@ def make_sysfs(root, port="1-1", authorized="1", classes=("08",), block=True):
     os.makedirs(links, exist_ok=True)
     if not os.path.lexists(os.path.join(links, port)):
         os.symlink(base, os.path.join(links, port))
+
+
+class FakeYaraSession:
+    """Content markers: YHIGH -> high match, YMED -> medium match, YTIME -> timeout, YDIE -> worker dies."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.rules_version = "7:abcdef0123456789"
+        self.closed = False
+
+    async def scan_fd(self, fd):
+        from src.orchestrator.scanner_yara_client import YaraResult, YaraUnavailable
+        data = os.pread(fd, 4096, 0)
+        self.owner.scanned += 1
+        if b"YDIE" in data:
+            raise YaraUnavailable("worker_disconnected")
+        if b"YHIGH" in data:
+            return YaraResult("match", [{"rule": "evil", "namespace": "malware", "tags": [], "severity": "high"}])
+        if b"YMED" in data:
+            return YaraResult("match", [{"rule": "odd", "namespace": "hunting", "tags": [], "severity": "medium"}])
+        if b"YTIME" in data:
+            return YaraResult("timeout")
+        return YaraResult("clean")
+
+    async def bye(self):
+        self.closed = True
+
+    def close(self):
+        self.closed = True
+
+
+class FakeYaraClient:
+    def __init__(self, available=True):
+        self.available = available
+        self.scanned = 0
+
+    async def session(self):
+        from src.orchestrator.scanner_yara_client import YaraUnavailable
+        if not self.available:
+            raise YaraUnavailable("ruleset_unavailable")
+        return FakeYaraSession(self)
+
+    async def ping(self):
+        return (await self.session()).rules_version

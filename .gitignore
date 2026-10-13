@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local runtime / test artefacts
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+
+# Secrets — never commit (spec §6.1, §8.3)
+secrets/
+*.key
+*.pem
+*.hash
+
+# Claude Code local settings
+.claude/settings.local.json

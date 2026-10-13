@@ -178,5 +178,5 @@ The item-by-item status is in docs/hardening-checklist.md.
 - **Sockets under ProtectSystem=strict:** connecting to a Unix socket on a read-only `/run`
   must work for GUI/LED/web.
 - **Quarantine:** a real run of `setup-quarantine.sh` (no device-mapper in the build container).
-- **Acceptance:** USBGuard rejects a keyboard and a mass-storage + HID composite; the station
-  boots to IDLE within 30 s.
+- **Acceptance:** the full procedure (automated + manual, with sign-off) is
+  tests/acceptance/MANUAL_TEST_CHECKLIST.md; tooling notes in docs/acceptance-notes.md.

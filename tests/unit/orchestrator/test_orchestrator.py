@@ -348,6 +348,26 @@ async def test_stale_signatures_not_ready(harness):
     assert orch.state is GUIState.NOT_READY and "signatures_stale" in orch.health.failures
 
 
+async def test_low_disk_space_not_ready_and_recovery(harness, env, monkeypatch):
+    import shutil
+    from collections import namedtuple
+    usage = namedtuple("usage", "total used free")
+    free = [0]
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage(10 << 30, 0, free[0]))
+    orch, *_ = harness({"health": {"min_free_disk_mb": 512}})
+    await orch.check_health()
+    assert orch.state is GUIState.NOT_READY and "disk_space_low" in orch.health.failures
+    free[0] = 1 << 30
+    await orch.check_health()
+    assert orch.state is GUIState.IDLE
+
+
+async def test_invalid_clock_not_ready(harness):
+    orch, *_ = harness({"health": {"min_valid_year": 2100}})
+    await orch.check_health()
+    assert orch.state is GUIState.NOT_READY and "clock_invalid" in orch.health.failures
+
+
 async def test_broker_down_not_ready(harness):
     orch, broker, *_ = harness()
     broker.alive = False

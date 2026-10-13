@@ -84,7 +84,7 @@ yara_complete (if enabled), vt_complete (if enabled)
 
 pytest tests/unit/              # no hardware required
 pytest tests/integration/       # requires clamd running and loopback device
-pytest tests/acceptance/        # full stack, Pi only
+pytest tests/acceptance/        # full stack, Pi only (as root; see tests/acceptance/MANUAL_TEST_CHECKLIST.md)
 
 ## Skills
 
@@ -97,7 +97,7 @@ docs/USB-Scan-Station-Spec-v1.5.md — authoritative. When in doubt, check the s
 §5.4 service privileges · §6.2 config validation · §8.2 USBGuard/broker · §10.1 PIN
 Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md,
 docs/yara-worker-design-notes.md, docs/gui-design-notes.md, docs/led-design-notes.md,
-docs/events-design-notes.md, docs/web-design-notes.md
+docs/events-design-notes.md, docs/web-design-notes.md, docs/acceptance-notes.md
 Deployment: docs/deployment.md (scripts/first-boot-setup.sh, systemd/, config/system/)
 Hardening: docs/hardening-checklist.md (scripts/harden.sh, scripts/maintenance-mode.sh, src/host/)
 

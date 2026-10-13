@@ -77,6 +77,7 @@ class SkipReason(str, Enum):
     TIMEOUT = "timeout"
     POLICY_EXCLUSION = "policy_exclusion"
     TOO_LARGE_FOR_ENGINE = "too_large_for_engine"
+    ENGINE_ERROR = "engine_error"
 
 
 class FileOutcome(str, Enum):
@@ -101,6 +102,7 @@ class EventType(str, Enum):
     # Orchestrator -> clients
     STATE_CHANGED = "state_changed"
     SCAN_STARTED = "scan_started"
+    SCAN_INTERRUPTED = "scan_interrupted"
     SCAN_PROGRESS = "scan_progress"
     ENGINE_STAGE = "engine_stage"
     DETECTION = "detection"
@@ -195,9 +197,29 @@ class CoverageMetrics:
     vt_complete: bool | None = None     # None = engine not enabled
     skip_reasons: dict[SkipReason, int] = field(default_factory=dict)
 
-    def record_skip(self, reason: SkipReason) -> None:
-        self.files_skipped += 1
+    def _count_reason(self, reason: SkipReason) -> None:
         self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
+
+    def record_skip(self, reason: SkipReason) -> None:
+        """Not scanned by decision or limit (policy exclusion, size, engine limits)."""
+        self.files_skipped += 1
+        self._count_reason(reason)
+
+    def record_uninspectable(self, reason: SkipReason) -> None:
+        """Content exists but could not be read or decoded (unreadable, encrypted)."""
+        self.files_uninspectable += 1
+        self._count_reason(reason)
+
+    def record_failed(self, reason: SkipReason) -> None:
+        """Engine failed on the file (timeout, engine error)."""
+        self.files_failed += 1
+        self._count_reason(reason)
+
+    def has_uninspected_content(self) -> bool:
+        """True if anything other than an explicit policy exclusion was not inspected."""
+        if self.files_failed or self.files_uninspectable:
+            return True
+        return any(n for r, n in self.skip_reasons.items() if r is not SkipReason.POLICY_EXCLUSION)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {name: getattr(self, name) for name in _COUNTER_FIELDS}

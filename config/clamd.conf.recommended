@@ -1,0 +1,29 @@
+# Settings the USB Scan Station relies on (merge into /etc/clamav/clamd.conf).
+# Option semantics: clamd.conf(5), ClamAV 1.5. Applied by the setup script in Phase 10.
+
+LocalSocket /var/run/clamav/clamd.ctl
+LocalSocketGroup clamav
+LocalSocketMode 660
+# TCP is not used; FILDES only works on Unix sockets.
+# TCPSocket must stay disabled.
+
+# Report limit hits and encrypted content instead of silently passing them.
+# Without these a partially scanned file could contribute to a false CLEAN.
+AlertExceedsMax yes
+AlertEncrypted yes
+HeuristicAlerts yes
+# Keep real-signature detections ahead of heuristics inside archives.
+HeuristicScanPrecedence no
+
+# Limits. MaxFileSize must equal clamav.max_file_size_mb in scan_station.yaml.
+# ClamAV cannot scan files larger than 2 GB.
+MaxFileSize 2047M
+MaxScanSize 4000M
+MaxRecursion 17
+MaxFiles 10000
+MaxScanTime 120000
+
+# Commands the orchestrator does not need.
+EnableShutdownCommand no
+EnableReloadCommand no
+EnableStatsCommand no

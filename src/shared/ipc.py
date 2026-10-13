@@ -103,6 +103,7 @@ class IPCServer:
         group_gid: int | None = None,
         inbound_types: Iterable[EventType] = (),
         on_message: InboundHandler | None = None,
+        on_connect: Callable[[PeerCredentials], list[ScanEvent]] | None = None,
     ) -> None:
         self.path = path
         self._allowed_uids = frozenset(allowed_uids)
@@ -111,6 +112,7 @@ class IPCServer:
         self._group_gid = group_gid
         self._inbound_types = frozenset(inbound_types)
         self._on_message = on_message
+        self._on_connect = on_connect
         self._clients: set[_Client] = set()
         self._server: asyncio.base_events.Server | None = None
 
@@ -189,6 +191,10 @@ class IPCServer:
             return
         client = _Client(writer, creds)
         self._clients.add(client)
+        if self._on_connect is not None:
+            for event in self._on_connect(creds):  # current-state snapshot for late joiners
+                with contextlib.suppress(asyncio.QueueFull):
+                    client.queue.put_nowait(encode_event(event))
         writer_task = asyncio.create_task(self._writer_loop(client))
         try:
             while True:

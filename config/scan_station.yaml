@@ -33,6 +33,17 @@ broker:
   command_timeout_seconds: 30
   max_clock_skew_seconds: 30
 
+orchestrator:
+  state_socket: /run/usb-scan/state.sock
+  client_users: [usbscan-gui, usbscan-led]   # uids allowed on the state socket
+  gui_user: usbscan-gui                      # only uid allowed to send operator messages
+  socket_group: usbscan-gui
+  health_interval_seconds: 60
+  removed_result_display_seconds: 15   # result shown after removal mid-scan
+  result_display_seconds: 300          # result shown after logical eject (removal not observable)
+  storage_wait_seconds: 10             # authorized USB device without storage -> REJECTED
+  thermal_zone_path: /sys/class/thermal/thermal_zone0/temp
+
 scan:
   global_timeout_seconds: 3600
   max_files: 500000
@@ -48,8 +59,9 @@ clamav:
   socket_path: /var/run/clamav/clamd.ctl
   max_signature_age_hours: 24
   per_file_timeout_seconds: 120
-  max_file_size_mb: 4000
+  max_file_size_mb: 2047                # ClamAV limit is 2 GB; keep equal to clamd.conf MaxFileSize
   connect_timeout_seconds: 10
+  concurrency: 2                        # parallel clamd FILDES requests
 
 yara:
   enabled: false

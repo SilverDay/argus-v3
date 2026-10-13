@@ -44,6 +44,8 @@ httpx 0.27+. USBGuard (system service). No udisks2. No dasbus. No RPi.GPIO.
   references (`file:`, `credential:`, `env:`) resolved by `src/shared/secret_refs.py`.
 - **USB mounts are always read-only** (ro, noexec, nosuid, nodev, nosymfollow + FS-specific
   opts; block device set read-only first). See docs/broker-design-notes.md.
+- **ClamAV via FILDES:** the orchestrator opens files and passes fds to clamd; clamd needs
+  no mount access. clamd.conf must have AlertExceedsMax/AlertEncrypted (config/clamd.conf.recommended).
 - **All external HTTP calls use TLS with certificate verification.** httpx, not
   requests. Never disable verification.
 - **Trixie venv:** MUST use `--system-site-packages` for lgpio. Do NOT pip install lgpio.
@@ -87,6 +89,7 @@ pytest tests/acceptance/        # full stack, Pi only
 docs/USB-Scan-Station-Spec-v1.5.md — authoritative. When in doubt, check the spec.
 §3.3 verdict semantics · §3.4 coverage metrics · §3.5 operator_hold ·
 §5.4 service privileges · §6.2 config validation · §8.2 USBGuard/broker · §10.1 PIN
+Design notes / deviations: docs/broker-design-notes.md, docs/orchestrator-design-notes.md
 
 ## Commit Style
 

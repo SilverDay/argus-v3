@@ -110,6 +110,21 @@ class BrokerConfig:
 
 
 @dataclass(frozen=True)
+class OrchestratorConfig:
+    state_socket: str = "/run/usb-scan/state.sock"
+    client_users: tuple[str, ...] = ("usbscan-gui", "usbscan-led")
+    gui_user: str = "usbscan-gui"      # only this uid may send operator messages (PIN, ack)
+    socket_group: str = "usbscan-gui"
+    health_interval_seconds: int = field(default=60, metadata=_range(5, 3600))
+    removed_result_display_seconds: int = field(default=15, metadata=_range(0, 300))
+    # After a logical eject the kernel forgets the device, so physical removal is not
+    # observable; the result stays until the next insertion or this timeout.
+    result_display_seconds: int = field(default=300, metadata=_range(10, 3600))
+    storage_wait_seconds: int = field(default=10, metadata=_range(1, 60))
+    thermal_zone_path: str = "/sys/class/thermal/thermal_zone0/temp"
+
+
+@dataclass(frozen=True)
 class ScanConfig:
     global_timeout_seconds: int = field(default=3600, metadata=_range(60, 86_400))
     max_files: int = field(default=500_000, metadata=_range(1, 100_000_000))
@@ -127,8 +142,10 @@ class ClamAVConfig:
     socket_path: str = "/var/run/clamav/clamd.ctl"
     max_signature_age_hours: int = field(default=24, metadata=_range(1, 24 * 30))
     per_file_timeout_seconds: int = field(default=120, metadata=_range(1, 3600))
-    max_file_size_mb: int = field(default=4000, metadata=_range(1, 4095))
+    # ClamAV cannot scan files > 2 GB; must match MaxFileSize in clamd.conf.
+    max_file_size_mb: int = field(default=2047, metadata=_range(1, 2047))
     connect_timeout_seconds: int = field(default=10, metadata=_range(1, 120))
+    concurrency: int = field(default=2, metadata=_range(1, 8))
 
 
 @dataclass(frozen=True)
@@ -240,6 +257,7 @@ class Config:
     station: StationConfig = StationConfig()
     device: DeviceConfig = DeviceConfig()
     broker: BrokerConfig = BrokerConfig()
+    orchestrator: OrchestratorConfig = OrchestratorConfig()
     scan: ScanConfig = ScanConfig()
     clamav: ClamAVConfig = ClamAVConfig()
     yara: YaraConfig = YaraConfig()

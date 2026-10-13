@@ -5,32 +5,34 @@ description: >-
   and freshclam integration. Use when working on scan pipeline or health checks.
 ---
 
-# ClamAV Integration
+# ClamAV Integration (as implemented in src/orchestrator/scanner_clamav.py)
 
-## Communication
-Use clamd Unix socket at /var/run/clamav/clamd.ctl (not TCP).
-Send INSTREAM command for file scanning via socket streaming.
-Send VERSION command for daemon + signature version.
+## Transport: FILDES, not paths, not INSTREAM
+- Unix socket (clamav.socket_path, default /var/run/clamav/clamd.ctl).
+- The orchestrator opens each file (O_RDONLY|O_NOFOLLOW|O_NONBLOCK, regular files only)
+  and sends `nFILDES\n` + one byte carrying the fd in SCM_RIGHTS ancillary data.
+- clamd needs NO path access to USB mounts; no StreamMaxLength limit.
+- One connection per file; concurrency = clamav.concurrency.
 
-## Python Pattern
-Use asyncio StreamReader/StreamWriter. Do NOT use blocking socket calls.
-Chunk size for INSTREAM: 4096 bytes. Terminate with zero-length chunk (4-byte big-endian 0).
+## Replies (verified against clamd 1.5.4)
+- `fd[N]: OK` → clean
+- `fd[N]: <Sig> FOUND` → threat (severity high); `Heuristics.*` → medium (SUSPICIOUS)
+- `Heuristics.Limits.Exceeded.{MaxFiles,MaxFileSize,MaxScanSize,MaxRecursion}` → skip
+  (scan_limit / too_large_for_engine / recursion_limit) → INCOMPLETE
+- `Heuristics.Encrypted.*` → uninspectable (encrypted) → INCOMPLETE
+- `... ERROR`, garbage, timeout → files_failed → INCOMPLETE
+- clamd unreachable mid-scan → appliance fault → ERROR
+- Custom databases append `.UNOFFICIAL` to signature names.
 
-## Result Parsing
-OK response:     `stream: OK`
-Threat found:    `stream: Eicar-Test-Signature FOUND`
-Parse: `name, status = line.rsplit(' ', 1)`
-status == 'OK' → clean; status == 'FOUND' → threat; anything else → error
+## Required clamd.conf settings (see config/clamd.conf.recommended)
+AlertExceedsMax yes, AlertEncrypted yes, HeuristicScanPrecedence no,
+MaxFileSize = clamav.max_file_size_mb (≤ 2047M: ClamAV cannot scan files > 2 GB).
+Without AlertExceedsMax, limit hits are silent and could yield a false CLEAN.
 
-## Error Handling
-clamd unavailable → verdict = ERROR, clamav_complete = False, log clamd_unreachable=True
-File too large for clamd → files_skipped++ with reason 'too_large_for_engine'
-Timeout → files_failed++ with reason 'timeout', clamav_complete = False
+## VERSION / signature age
+`ClamAV <engine>/<db version>/<ctime>` (clamd/session.c print_ver). With only
+unofficial databases the reply is `ClamAV <engine>` → `signatures_unknown` → NOT_READY.
+ctime is clamd's local time; the appliance runs in UTC.
 
-## Coverage Tracking
-Track per-file: scanned | detected | skipped | failed | timeout | encrypted | unsupported
-Aggregate into ScanResult.coverage metrics. clamav_complete=True only if zero failed/timeout.
-
-## Health Check
-On startup: send PING → expect PONG. Check VERSION for signature age.
-Signature age > config.clamav.max_signature_age_hours → station NOT_READY.
+## Health gates (src/orchestrator/health.py)
+PING→PONG; signature age ≤ clamav.max_signature_age_hours, else NOT_READY.

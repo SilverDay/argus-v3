@@ -112,6 +112,7 @@ class EventType(str, Enum):
     DEVICE_REMOVED = "device_removed"
     HEALTH = "health"
     HEALTH_GATE_FAILED = "health_gate_failed"
+    SYNTHETIC_SCAN = "synthetic_scan"            # maintenance self-test (spec §3.8); not a device scan
     OPERATOR_HOLD_ENTERED = "operator_hold_entered"
     OPERATOR_HOLD_EXITED = "operator_hold_exited"
     AUTH_RESULT = "auth_result"

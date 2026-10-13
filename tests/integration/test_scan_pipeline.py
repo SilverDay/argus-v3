@@ -355,3 +355,16 @@ def test_yara_clean_volume_complete(clamd, volume, broker_harness, yara_worker):
     path = volume({"hello.txt": b"hello\n"}, fs="ext4")
     r = scan_as_nobody(path, clamd, broker_harness, yara_sock=yara_worker)
     assert r["verdict"] == "CLEAN" and r["coverage"]["yara_complete"] is True, r
+
+
+def test_synthetic_scan_against_real_clamd(clamd, tmp_path):
+    """Spec §3.8 / AC-F05: the EICAR self-test with a real clamd over FILDES."""
+    from src.orchestrator.scanner_clamav import ClamdClient
+    from src.orchestrator.synthetic import run_synthetic_scan
+    from src.shared.config import load_config_from_dict
+
+    cfg = load_config_from_dict({})
+    payload = asyncio.run(run_synthetic_scan(cfg, ClamdClient(clamd), None, str(tmp_path / "synthetic"), "manual"))
+    assert payload["passed"] is True, payload
+    assert payload["verdict"] == "THREAT" and payload["clamav"]["signature"].startswith("Test.EICAR")
+    assert os.listdir(tmp_path / "synthetic") == []

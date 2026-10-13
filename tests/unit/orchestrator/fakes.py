@@ -56,6 +56,7 @@ class FakeClamd:
         self.db_time = time.time()
         self.scanned = 0
         self.gate = None          # optional asyncio.Event to pause scanning
+        self.detect_eicar = True
 
     async def ping(self):
         if not self.alive:
@@ -72,6 +73,8 @@ class FakeClamd:
             await self.gate.wait()
         data = os.pread(fd, 4096, 0)
         self.scanned += 1
+        if b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE" in data and self.detect_eicar:
+            return ClamResult(ClamStatus.FOUND, "Win.Test.EICAR_HDB-1", Severity.HIGH)
         if b"EVIL" in data:
             return ClamResult(ClamStatus.FOUND, "Win.Test.Evil", Severity.HIGH)
         if b"HEUR" in data:

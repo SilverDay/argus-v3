@@ -258,6 +258,7 @@ health:
   min_free_disk_mb: 512
   max_cpu_temp_c: 80
   min_valid_year: 2026
+  synthetic_scan_interval_hours: 24     # EICAR self-test (spec §3.8); 0 = start-up + SIGUSR1 only
 
 host:                                   # host hardening, applied by scripts/harden.sh (spec §8.1)
   ssh_enabled: false                    # spec: SSH off by default

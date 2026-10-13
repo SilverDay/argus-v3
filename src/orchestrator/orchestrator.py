@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -40,6 +41,7 @@ from .quarantine import Quarantine, QuarantineUnavailable
 from .scan_session import DeviceRejected, ScanSession
 from .scanner_clamav import ClamdClient
 from .scanner_yara_client import YaraClient
+from .synthetic import run_synthetic_scan
 from .usb_monitor import UsbEvent
 from .virustotal import VirusTotalClient
 
@@ -49,6 +51,8 @@ HEALTH_VERSION_KEYS = ("clamav_engine", "clamav_db_version", "yara_rules_version
 HEALTH_REPUBLISH_SECONDS = 3600
 GUI_MAX_THREATS = 20
 GUI_MAX_REASONS = 40
+SYNTHETIC_RETRY_SECONDS = 300      # after a failed synthetic scan
+SYNTHETIC_BUSY_RETRY_SECONDS = 30  # station busy or another health gate failing
 WAITING_FOR_REMOVAL = (GUIState.RESULT, GUIState.EJECT_FAILED, GUIState.REJECTED, GUIState.ERROR)
 
 
@@ -99,6 +103,8 @@ class Orchestrator:
         self._health_versions: dict[str, Any] = {}
         self._health_published = float("-inf")
         self._lock = asyncio.Lock()
+        self.synthetic_failed = False
+        self.last_synthetic: dict[str, Any] | None = None
 
     # --- publishing ---------------------------------------------------------
 
@@ -148,6 +154,8 @@ class Orchestrator:
         report = await run_checks(self.cfg, self.broker, self.clamd, yara=self.yara,
                                   events=getattr(self.sink, "health_failures", None))
         await self._optional_module_checks(report)
+        if self.synthetic_failed:
+            report.failures.append("synthetic_scan_failed")
         changed = report.failures != self.health.failures
         versions = {k: report.details.get(k) for k in HEALTH_VERSION_KEYS}
         republish = (versions != self._health_versions
@@ -181,6 +189,55 @@ class Orchestrator:
             except QuarantineUnavailable as exc:
                 report.warnings.append("quarantine_unavailable")
                 report.details["quarantine_error"] = exc.reason
+
+    # --- synthetic scan (spec §3.8, AC-F05) ----------------------------------
+
+    async def run_synthetic(self, trigger: str) -> dict[str, Any] | None:
+        """Run the EICAR self-test when no device is being handled; None = not run now.
+
+        Skipped while another health gate fails (e.g. clamd down is already reported as
+        clamav_unavailable). Holding the lock keeps USB insertions waiting for the few
+        milliseconds the two-file scan takes, so it never overlaps a device scan.
+        """
+        async with self._lock:
+            if self.active is not None or self.state not in IDLE_STATES:
+                return None
+            if any(f != "synthetic_scan_failed" for f in self.health.failures):
+                return None
+            payload = await run_synthetic_scan(
+                self.cfg, self.clamd, self.yara,
+                os.path.join(self.cfg.orchestrator.state_dir, "synthetic"), trigger)
+            self.synthetic_failed = not payload["passed"]
+            self.last_synthetic = payload
+            await self.publish(ScanEvent(EventType.SYNTHETIC_SCAN, None, payload))
+        if not payload["passed"]:
+            log.error("synthetic scan failed: verdict %s, clamav %s", payload["verdict"], payload.get("clamav"))
+        await self.check_health()
+        return payload
+
+    async def synthetic_loop(self, request: asyncio.Event) -> None:
+        """Start-up run, then every ``health.synthetic_scan_interval_hours`` or on request."""
+        loop = asyncio.get_running_loop()
+        interval = self.cfg.health.synthetic_scan_interval_hours * 3600
+        due: float | None = loop.time()
+        trigger = "startup"
+        while True:
+            try:
+                timeout = None if due is None else max(0.0, due - loop.time())
+                await asyncio.wait_for(request.wait(), timeout)
+                request.clear()
+                trigger = "manual"
+            except asyncio.TimeoutError:
+                pass
+            result = await self.run_synthetic(trigger)
+            if result is None:
+                due = loop.time() + SYNTHETIC_BUSY_RETRY_SECONDS      # keep the pending trigger
+                continue
+            if not result["passed"]:
+                due = loop.time() + SYNTHETIC_RETRY_SECONDS
+            else:
+                due = loop.time() + interval if interval else None
+            trigger = "schedule"
 
     async def recover_interrupted(self) -> None:
         stale = self.sink.take_stale_marker()

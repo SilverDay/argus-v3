@@ -34,7 +34,8 @@ from .security import has_role, require_role
 
 bp = Blueprint("views", __name__)
 AUDIT_TYPES = ["web_auth", "web_access", "auth_result", "tamper_detected", "tamper_acknowledged",
-               "audit_checkpoint", "alert_delivery", "health_gate_failed", "scan_interrupted"]
+               "audit_checkpoint", "alert_delivery", "health_gate_failed", "scan_interrupted",
+               "synthetic_scan"]
 VERDICTS = [v.value for v in Verdict]
 PAGE = 50
 EXPORT_MAX_ROWS = 100_000

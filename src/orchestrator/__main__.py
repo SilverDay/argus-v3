@@ -101,7 +101,12 @@ async def run(cfg, key: bytes) -> None:
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
-    tasks = [asyncio.create_task(t) for t in (usb_loop(), health_loop(), watchdog_loop())]
+    # Maintenance: `systemctl kill -s SIGUSR1 --kill-whom=main usb-scan-orchestrator`
+    # runs the synthetic EICAR scan now (spec §3.8, AC-F05).
+    synthetic_request = asyncio.Event()
+    loop.add_signal_handler(signal.SIGUSR1, synthetic_request.set)
+    tasks = [asyncio.create_task(t) for t in (usb_loop(), health_loop(), watchdog_loop(),
+                                              orch.synthetic_loop(synthetic_request))]
     notify("READY=1")
     log.info("orchestrator ready (state %s)", orch.state.value)
     await stop.wait()

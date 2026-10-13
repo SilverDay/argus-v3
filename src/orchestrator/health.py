@@ -4,7 +4,8 @@ Failure codes: broker_unavailable, clamav_unavailable, signatures_unknown,
 signatures_stale, yara_unavailable (mandatory YARA without a verified ruleset or
 reachable worker), disk_space_low, clock_invalid, thermal_limit, and the event sink's
 own failures (event_store_unavailable, event_store_unwritable, audit_chain_broken,
-event_spool_pending). Warnings (do not block): pin_not_configured,
+event_spool_pending) and synthetic_scan_failed (added by the orchestrator
+from the last synthetic EICAR scan, src/orchestrator/synthetic.py). Warnings (do not block): pin_not_configured,
 thermal_unknown.
 """
 from __future__ import annotations

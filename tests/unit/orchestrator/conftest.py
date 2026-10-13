@@ -29,6 +29,7 @@ def make_cfg(env, **overrides):
         "events": {"db_path": str(env["data"] / "db" / "events.db")},
         "device": {"insertion_debounce_ms": 0},
         "orchestrator": {"storage_wait_seconds": 1, "removed_result_display_seconds": 0,
+                         "state_dir": str(env["data"] / "orchestrator"),
                          "result_display_seconds": 10, "thermal_zone_path": str(env["temp"])},
         "health": {"min_free_disk_mb": 1},
         "scan": {"progress_interval_ms": 100},

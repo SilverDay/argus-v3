@@ -115,6 +115,30 @@ partitions are never excluded. Partition type comes from libblkid `PART_ENTRY_TY
 - Since Phase 8 alerts are derived from committed events by the events service and sent
   through its durable queues; the one-retry webhook behaviour was replaced by queue backoff.
 
+### Synthetic scan (spec §3.8, AC-F05; added in Phase 12)
+- `src/orchestrator/synthetic.py` writes the EICAR test string and a harmless control file
+  to `<state_dir>/synthetic/` (0600, `O_EXCL|O_NOFOLLOW`), opens them with the production
+  `open_for_scan`, unlinks them and passes the descriptors to clamd (FILDES) and, when
+  enabled, to the YARA worker. The production verdict engine evaluates the result.
+- The result is deterministic: `passed` means
+  - ClamAV reported EICAR as FOUND;
+  - the control file was clean;
+  - the verdict was THREAT.
+  YARA results are recorded but not asserted, since the deployed rules need not contain an
+  EICAR rule. VirusTotal is never queried.
+- Recorded as a `synthetic_scan` event in the audit chain. It is not a `verdict`, so scan
+  statistics are unaffected. The admin audit view lists it.
+- When it runs:
+  - at start-up;
+  - every `health.synthetic_scan_interval_hours` (default 24; 0 = start-up and on demand);
+  - on demand with `systemctl kill -s SIGUSR1 --kill-whom=main usb-scan-orchestrator`.
+- It only runs while no device is handled and no other health gate fails; otherwise it
+  retries after 30 s. The orchestrator lock is held for the run, so an insertion waits for it.
+- A failed run adds the mandatory health failure `synthetic_scan_failed` (NOT_READY, and the
+  `not_ready` alert). A failure is retried every 5 minutes. Only a passing run clears it.
+- Not covered by the synthetic scan: USBGuard, the broker and the mount path. Those are
+  covered by the reference-medium acceptance tests (AC-F01/F02).
+
 ## Still to validate on the Pi
 - vfat/exfat/ntfs3 mounts (this CI kernel only supports ext4).
 - `PART_ENTRY_TYPE` on real partition devices (CI cannot create loop partitions).

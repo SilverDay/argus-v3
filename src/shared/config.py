@@ -466,6 +466,10 @@ class HealthConfig:
     min_free_disk_mb: int = field(default=512, metadata=_range(1, 1_000_000))
     max_cpu_temp_c: int = field(default=80, metadata=_range(40, 100))
     min_valid_year: int = field(default=2026, metadata=_range(2024, 2100))
+    # End-to-end synthetic EICAR scan (spec §3.8, AC-F05): run at start-up, then every N hours
+    # (0 = start-up and on demand only; on demand: SIGUSR1 to the orchestrator). A failed run
+    # is a mandatory health failure (synthetic_scan_failed) until a later run passes.
+    synthetic_scan_interval_hours: int = field(default=24, metadata=_range(0, 168))
 
 
 @dataclass(frozen=True)

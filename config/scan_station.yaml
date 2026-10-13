@@ -1,0 +1,115 @@
+# USB Scan Station configuration template (spec v1.5 §6).
+#
+# Installed to /etc/usb-scan/scan_station.yaml. This file contains NO secrets and
+# NO credential hashes. Secret fields hold references only:
+#   file:/abs/path        root-controlled file (not accessible by "other")
+#   credential:<name>     systemd credential ($CREDENTIALS_DIRECTORY/<name>)
+#   env:<NAME>            environment variable (least preferred)
+# Unknown keys are rejected; omitted keys take the defaults in src/shared/config.py.
+
+schema_version: 1
+
+station:
+  station_id: station-001
+  data_dir: /var/lib/usb-scan
+  log_dir: /var/log/usb-scan
+  run_dir: /run/usb-scan
+
+device:
+  max_device_capacity_gb: 2048          # FR-USB-09: excess -> REJECTED, never CLEAN
+  internal_device_sysfs_prefixes: []    # FR-USB-08: never offered for scanning
+  require_full_coverage: true           # uninspected partition -> INCOMPLETE
+  insertion_debounce_ms: 500
+
+scan:
+  global_timeout_seconds: 3600
+  max_files: 500000
+  max_depth: 64
+  max_bytes_total_gb: 2048
+  block_extensions: []                  # policy violations, not malware detections
+  allow_extensions: []                  # non-empty = restricted scope, disclosed in report/UI
+  blocked_extension_severity: suspicious  # threat | suspicious (open decision, spec §15.2 #6)
+  progress_interval_ms: 500
+
+clamav:
+  role: mandatory                       # ClamAV is always mandatory
+  socket_path: /var/run/clamav/clamd.ctl
+  max_signature_age_hours: 24
+  per_file_timeout_seconds: 120
+  max_file_size_mb: 4000
+  connect_timeout_seconds: 10
+
+yara:
+  enabled: false
+  role: advisory                        # mandatory requires signed ruleset + trust anchor
+  rules_path: /var/lib/usb-scan/rules/active
+  ruleset_signature_path: ""
+  trust_anchor_path: ""
+  per_file_timeout_seconds: 60
+  global_budget_seconds: 1800
+  memory_limit_mb: 1024
+
+virustotal:
+  enabled: false                        # hash-only lookups; no file uploads
+  role: advisory
+  api_key_ref: ""                       # e.g. credential:vt_api_key
+  on_quota_or_network_failure: continue # mandatory role requires incomplete | error
+  cache_ttl_days: 7
+  rate_limit_per_minute: 4
+  large_file_hash_budget_mb: 4096
+  request_timeout_seconds: 15
+
+operator_hold:
+  enabled: false
+  max_duration_seconds: 60              # 15..300
+  allowed_verdicts: [CLEAN]             # CLEAN and/or SUSPICIOUS, never THREAT
+
+pin:
+  hash_algorithm: bcrypt
+  bcrypt_cost: 12
+  hash_ref: file:/etc/usb-scan/secrets/operator_pin.hash
+  min_length: 6
+  max_length: 12
+  max_failed_attempts: 5
+  lockout_minutes: 15
+  deny_list_path: ""
+
+auth:
+  web:
+    oidc_enabled: true
+    require_mfa: true                   # mandatory with OIDC
+    local_fallback_allowed: false       # isolated management networks only
+
+quarantine:
+  quarantine_on_threat: false
+  path: /var/lib/usb-scan/quarantine
+  retention_days: 30
+  min_free_mb: 1024
+  export_enabled: false
+
+admin_web:
+  enabled: false                        # enable only after HTTPS + auth are configured
+  bind_host: 127.0.0.1
+  bind_port: 8080
+
+logging:
+  level: INFO
+  file: /var/log/usb-scan/usb-scan.jsonl
+  filename_privacy: hash                # plain | hash | omit
+  pseudonymization_key_ref: ""
+  syslog:
+    enabled: false
+    host: ""
+    port: 6514
+    transport: tls                      # udp | tcp | tls
+    ca_file: ""
+
+events:
+  db_path: /var/lib/usb-scan/db/events.db
+  hmac_key_ref: file:/etc/usb-scan/secrets/hmac.key
+  checkpoint_interval_hours: 1
+
+health:
+  min_free_disk_mb: 512
+  max_cpu_temp_c: 80
+  min_valid_year: 2026

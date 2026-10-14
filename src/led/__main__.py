@@ -1,4 +1,7 @@
-"""Entry point: python -m src.led [--config PATH]  (user usbscan-led, group gpio).
+"""Entry point: python -m src.led [--config PATH] [--test]  (user usbscan-led, group gpio).
+
+``--test`` is the installer's wiring check (docs/hardware-wiring.md): with the service
+stopped it lights red, green, blue and white for two seconds each, then switches off.
 
 Subscribes to the orchestrator state socket directly (no GUI bridge), so the status
 light keeps working if the GUI crashes. If the orchestrator is unreachable the LED
@@ -11,6 +14,8 @@ import asyncio
 import logging
 import signal
 import sys
+import time
+from collections.abc import Callable
 
 from src.shared.config import ConfigError, load_config
 from src.shared.ipc import IPCClient
@@ -44,15 +49,40 @@ async def run(cfg) -> None:
         controller.stop()
 
 
+WIRING_STEPS = (("red", (1.0, 0.0, 0.0)), ("green", (0.0, 1.0, 0.0)), ("blue", (0.0, 0.0, 1.0)),
+                ("white", (1.0, 1.0, 1.0)), ("off", (0.0, 0.0, 0.0)))
+
+
+def wiring_test(led_cfg, seconds: float = 2.0, sleep: Callable[[float], None] = time.sleep,
+                driver=None) -> int:
+    driver = driver or select_driver(led_cfg)
+    print(f"driver {type(driver).__name__}, gpiochip {led_cfg.gpiochip}, BCM red={led_cfg.pin_red} "
+          f"green={led_cfg.pin_green} blue={led_cfg.pin_blue}, common_anode={led_cfg.common_anode}")
+    if type(driver).__name__ == "StubDriver":
+        print("WARNING: stub driver - nothing is driven; set led.driver: lgpio", file=sys.stderr)
+    try:
+        for name, color in WIRING_STEPS:
+            print(f"  {name}")
+            driver.set(color)
+            if name != "off":
+                sleep(seconds)
+    finally:
+        driver.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="usb-scan-led")
     parser.add_argument("--config", default="/etc/usb-scan/scan_station.yaml")
+    parser.add_argument("--test", action="store_true", help="wiring check (stop usb-scan-led first)")
     opts = parser.parse_args(argv)
     try:
         cfg = load_config(opts.config)
     except ConfigError as exc:
         print(f"usb-scan-led: {exc}", file=sys.stderr)
         return 2
+    if opts.test:
+        return wiring_test(cfg.led)
     setup_logging(cfg.logging.level, station_id=cfg.station.station_id, console=True)
     asyncio.run(run(cfg))
     return 0

@@ -255,3 +255,16 @@ def test_service_process_starts_and_stops_cleanly(tmp_path):
     assert proc.returncode == 0, out
     assert "Traceback" not in out
     assert "using stub driver" not in out          # driver: stub selected explicitly, no fallback warning
+
+
+def test_wiring_test_drives_each_channel_then_off(capsys):
+    from src.led.__main__ import wiring_test
+    from src.led.drivers import StubDriver
+    from src.shared.config import load_config_from_dict
+    cfg = load_config_from_dict({"led": {"driver": "stub"}}).led
+    drv = StubDriver(cfg)
+    assert wiring_test(cfg, sleep=lambda s: None, driver=drv) == 0
+    assert drv.history[:5] == [(100.0, 0.0, 0.0), (0.0, 100.0, 0.0), (0.0, 0.0, 100.0),
+                               (100.0, 100.0, 100.0), (0.0, 0.0, 0.0)]
+    assert drv.closed
+    assert "BCM red=17 green=27 blue=22" in capsys.readouterr().out

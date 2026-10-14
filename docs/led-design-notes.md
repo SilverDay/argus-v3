@@ -34,6 +34,11 @@
 
 Open: NOT_READY and EJECTING share "white solid" (as in the plan); EJECTING lasts seconds.
 
+## Wiring
+
+Pins, resistor values, common-anode variant and the `python -m src.led --test` wiring check:
+docs/hardware-wiring.md.
+
 ## To validate on the Pi
 
 - GPIO chip number for the 40-pin header on the Trixie kernel (`gpiodetect`; config

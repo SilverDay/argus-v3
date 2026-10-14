@@ -14,14 +14,15 @@ Engines:
 
 USBGuard admits mass-storage-only devices. A small root broker mounts them read-only. A
 durable events service keeps a tamper-evident audit chain and forwards to SIEM and alert
-channels. A read-only admin web with OIDC/MFA shows status and history.
+channels. A read-only admin web (OIDC and/or local accounts, both with MFA) shows status and
+history.
 
 ## Documentation
 
 | For | Document |
 |---|---|
 | People using the station | [docs/operator-guide.md](docs/operator-guide.md) · [Deutsch](docs/operator-guide.de.md) |
-| Installing a station | [docs/installation.md](docs/installation.md) |
+| Installing a station | [docs/installation.md](docs/installation.md), [docs/hardware-wiring.md](docs/hardware-wiring.md) (LED pins) |
 | Operating a station (IT) | [docs/admin-guide.md](docs/admin-guide.md) |
 | Provisioning reference | [docs/deployment.md](docs/deployment.md) |
 | Hardening status | [docs/hardening-checklist.md](docs/hardening-checklist.md) |

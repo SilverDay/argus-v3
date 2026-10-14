@@ -5,7 +5,8 @@ docs/deployment.md, which explains *why* and lists every option.
 
 **Time:** about 1–2 hours, most of it package and signature downloads.
 **You need:**
-- Raspberry Pi 5 (8 GB), active cooler, the 5" touchscreen and the RGB status LED;
+- Raspberry Pi 5 (8 GB), active cooler, the 5" touchscreen and the RGB status LED, wired as
+  in docs/hardware-wiring.md (BCM 17/27/22 = header pins 11/13/15, GND pin 14);
 - a high-endurance microSD card (≥ 64 GB);
 - a Linux workstation with a card reader;
 - network access during installation (packages, ClamAV signatures);
@@ -115,6 +116,16 @@ journalctl -u usb-scan-orchestrator -n 30 --no-pager
 ```
 
 The touchscreen should show **"Insert a USB device"**.
+
+Check the LED wiring once:
+
+```
+sudo systemctl stop usb-scan-led
+cd /opt/usb-scan && sudo .venv/bin/python -m src.led --test     # red, green, blue, white
+sudo systemctl start usb-scan-led
+```
+
+See docs/hardware-wiring.md.
 
 ## 8. Optional modules (each: edit the config, then restart the named service)
 

@@ -63,9 +63,9 @@ gui:
 led:
   driver: auto                        # auto | lgpio | stub — use lgpio in production
   gpiochip: 0                         # Pi 5 header GPIOs: verify with `gpiodetect` on the target kernel
-  pin_red: 17                         # BCM numbering, spec §5.1
-  pin_green: 27
-  pin_blue: 22
+  pin_red: 17                         # BCM numbering, spec §5.1 (header pin 11; docs/hardware-wiring.md)
+  pin_green: 27                       # header pin 13
+  pin_blue: 22                        # header pin 15; common cathode to GND, e.g. pin 14
   common_anode: false                 # spec: common-cathode RGB LED (GPIO high = on)
   pwm_frequency_hz: 200
   brightness_percent: 100

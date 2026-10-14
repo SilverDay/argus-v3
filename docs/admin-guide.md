@@ -47,9 +47,15 @@ match means no access.
 | Audit | admin | sign-ins, data access, PIN attempts, tamper/acknowledge events, alert delivery, synthetic scans |
 
 - **Data minimisation:** file paths and device serials are shown to the `admin` role only.
-- **Every access is audited.** Every page view and export is written to the audit chain
-  *before* the response is sent. If the audit log is unavailable, the page is refused (fail
-  closed).
+- **Access is audited.** Every page view (dashboard, statistics, configuration, history, scan
+  detail, audit) and every export is written to the audit chain *before* the response is
+  sent. If the audit log is unavailable, the page is refused (fail closed).
+  - **Two exceptions, by design:** the dashboard's 5-second status refresh
+    (`/partials/status`) and the chart data of the statistics page (`/api/stats`). Auditing them
+    would add about 17,000 events per day for each open browser.
+  - Both return only data their audited parent page already shows: station health, the last
+    scan's verdict and counts, daily totals and top signatures. No file paths or device
+    serials.
 - **Sessions:**
   - idle timeout 15 minutes, maximum 8 hours;
   - bound to the client address;

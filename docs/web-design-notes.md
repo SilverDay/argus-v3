@@ -106,8 +106,10 @@ front (spec §9.1).
   a template (tested).
 - **Access auditing.** Every data view writes a `web_access` event (user, role, method, path,
   query, status, client address), including denied (403) attempts. Logins, failures, logouts
-  and session rejections write `web_auth`. The 5-second status poll is not audited (it would
-  add ~17 000 events per day per open browser).
+  and session rejections write `web_auth`. Not audited: the 5-second status poll
+  (`/partials/status`, ~17 000 events per day per open browser) and the statistics chart data
+  (`/api/stats`). Both return only what their audited parent page shows (health, last
+  verdict and counts, daily totals, top signatures; no paths or serials).
   - Deviation: the plan asks to log "every authenticated request".
 - **Fail closed.** If an audit event cannot be written, the response is 503 and no data leaves
   without an audit record. A login is not completed without its audit record.

@@ -1,0 +1,3 @@
+# Release payloads (scripts/build-image.sh, git archive): development tooling stays out.
+.claude export-ignore
+CLAUDE.md export-ignore

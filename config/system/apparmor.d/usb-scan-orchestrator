@@ -22,6 +22,9 @@ profile usb-scan-orchestrator flags=(complain) {
   include <abstractions/ssl_certs>
   /etc/usb-scan/secrets/{broker-hmac.key,operator_pin.hash} r,
   /etc/usb-scan/secrets/vt_api_key r,
+  # credential: references (e.g. credential:vt_api_key via LoadCredential=)
+  /run/credentials/usb-scan-orchestrator.service/ r,
+  /run/credentials/usb-scan-orchestrator.service/* r,
   /var/lib/usb-scan/orchestrator/ rw,
   /var/lib/usb-scan/orchestrator/** rwk,
   /var/lib/usb-scan/quarantine/ rw,

@@ -27,7 +27,8 @@ PENDING_TTL = 600
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, user TEXT NOT NULL, role TEXT NOT NULL, method TEXT NOT NULL,
-    ip TEXT NOT NULL, csrf TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL);
+    ip TEXT NOT NULL, csrf TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL,
+    cred TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS oidc_pending (
     state_hash TEXT PRIMARY KEY, binding_hash TEXT NOT NULL, nonce TEXT NOT NULL,
     verifier TEXT NOT NULL, created REAL NOT NULL);
@@ -51,6 +52,7 @@ class Session:
     csrf: str
     created: float
     last_seen: float
+    cred: str = ""        # local accounts: fingerprint of the account entry it was issued from
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,9 @@ class SessionStore:
         self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False, timeout=10)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(sessions)")}
+        if "cred" not in columns:                       # databases created before 1.5.10
+            self._db.execute("ALTER TABLE sessions ADD COLUMN cred TEXT NOT NULL DEFAULT ''")
 
     @contextlib.contextmanager
     def _tx(self) -> Iterator[None]:
@@ -92,13 +97,14 @@ class SessionStore:
 
     # --- sessions -------------------------------------------------------------------------
 
-    def create(self, user: str, role: str, method: str, ip: str) -> tuple[str, Session]:
+    def create(self, user: str, role: str, method: str, ip: str, cred: str = "") -> tuple[str, Session]:
         token = secrets.token_urlsafe(32)
         now = self.clock()
-        sess = Session(_h(token), user, role, method, ip, secrets.token_urlsafe(32), now, now)
+        sess = Session(_h(token), user, role, method, ip, secrets.token_urlsafe(32), now, now, cred)
         with self._lock:
-            self._db.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?)",
-                             (sess.token_hash, user, role, method, ip, sess.csrf, now, now))
+            self._db.execute("INSERT INTO sessions (token_hash, user, role, method, ip, csrf, created, last_seen, cred)"
+                             " VALUES (?,?,?,?,?,?,?,?,?)",
+                             (sess.token_hash, user, role, method, ip, sess.csrf, now, now, cred))
             self._db.execute("DELETE FROM sessions WHERE last_seen < ? OR created < ?",
                              (now - self.idle, now - self.max))
         return token, sess
@@ -110,7 +116,8 @@ class SessionStore:
         th = _h(token)
         now = self.clock()
         with self._lock:
-            row = self._db.execute("SELECT * FROM sessions WHERE token_hash=?", (th,)).fetchone()
+            row = self._db.execute("SELECT token_hash, user, role, method, ip, csrf, created, last_seen, cred"
+                                   " FROM sessions WHERE token_hash=?", (th,)).fetchone()
             if row is None:
                 return None, "unknown"
             sess = Session(*row)

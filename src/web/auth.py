@@ -13,6 +13,7 @@ from flask import Blueprint, Response, current_app, g, make_response, redirect, 
 
 from .events_client import EventsUnavailable
 from . import totp
+from .local_accounts import credential_fingerprint
 from .local_accounts import verify as verify_local
 from .oidc import OidcError, pkce_pair
 from .security import (
@@ -33,12 +34,12 @@ def _unavailable() -> Response:
                                          message="The audit log is unavailable; sign-in is disabled."), 503)
 
 
-def _start_session(user: str, role: str, method: str) -> Response:
+def _start_session(user: str, role: str, method: str, cred: str = "") -> Response:
     try:
         audit_auth("success", user=user, role=role, method=method)
     except EventsUnavailable:
         return _unavailable()
-    token, _ = _state().sessions.create(user, role, method, client_ip())
+    token, _ = _state().sessions.create(user, role, method, client_ip(), cred)
     resp = redirect(url_for("views.dashboard"))
     set_cookie(resp, SESSION_COOKIE, token)
     return resp
@@ -98,7 +99,10 @@ def login_local() -> Response:
         st.sessions.record_failure(keys, lc.max_failed_attempts, lc.lockout_minutes * 60)
         return _fail(username, "local", reason)
     st.sessions.clear_failures(*keys)
-    return _start_session(acct.username, acct.role, "local+totp" if lc.require_totp else "local")
+    # Bound to the entry that was verified: if the account changed meanwhile (passwd, totp,
+    # role, disable), the new session is refused on its first use (security.load_session).
+    return _start_session(acct.username, acct.role, "local+totp" if lc.require_totp else "local",
+                          credential_fingerprint(acct))
 
 
 @bp.post("/auth/oidc/start")

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import logging
 import os
 import re
@@ -97,6 +98,12 @@ def parse_accounts(text: str) -> dict[str, Account]:
 def format_accounts(accounts: dict[str, Account]) -> str:
     header = "# USB Scan Station admin web accounts - managed by: python -m src.web.accounts_admin\n"
     return header + "".join(a.line() + "\n" for a in sorted(accounts.values(), key=lambda a: a.username))
+
+
+def credential_fingerprint(acct: Account) -> str:
+    """Identifies the exact account entry a session was issued from (passphrase hash, TOTP
+    seed, role, status). Any change to the entry changes the fingerprint."""
+    return hashlib.sha256(acct.line().encode("utf-8")).hexdigest()
 
 
 def verify(accounts: dict[str, Account], username: str, passphrase: str) -> Account | None:

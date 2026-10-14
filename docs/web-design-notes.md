@@ -58,8 +58,15 @@ front (spec §9.1).
     and RFC 4226 test vectors. The last accepted step per account is stored, so a code cannot be
     replayed. `require_totp: false` is a documented deviation (start-up warning; sessions marked
     `local` instead of `local+totp`).
-  - Local sessions are re-checked on every request: a disabled, removed or re-roled account
-    loses its sessions immediately; the CLI also deletes them on credential changes.
+  - Local sessions are bound to the exact account entry they were issued from (SHA-256 of the
+    entry: passphrase hash, TOTP seed, role, status) and re-checked on every request. Any change
+    with the CLI ends the session, including one created by a login that was in flight while the
+    credentials changed (external review finding, fixed 1.5.10). The CLI also deletes sessions
+    directly.
+- **Cross-process atomicity.** gunicorn runs two workers, each with its own SQLite connection.
+  TOTP step consumption, OIDC pending-login consumption and the failure counter are
+  read-modify-write operations in `BEGIN IMMEDIATE` transactions. A 4-process test reproduced
+  double acceptance and lost lockout increments before the fix.
   - Passphrases over 72 bytes are refused before bcrypt (bcrypt 5.0).
   - Unknown usernames cost one bcrypt check too, against a dummy hash.
   - Persistent lockout per account and per client address.

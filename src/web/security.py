@@ -15,6 +15,7 @@ from flask import Response, abort, current_app, g, redirect, request, url_for
 from src.shared.models import EventType, ScanEvent
 
 from .events_client import EventsUnavailable
+from .local_accounts import credential_fingerprint
 
 log = logging.getLogger(__name__)
 
@@ -79,11 +80,13 @@ def load_session() -> Response | None:
         # IP binding: a session cookie replayed from another address is revoked outright.
         reason = f"ip_changed_from:{sess.ip}"
     elif sess.method.startswith("local"):
-        # Local accounts are re-checked on every request: disabling, removing or re-roling an
-        # account (src.web.accounts_admin) ends its sessions at once; so does turning local
-        # sign-in off.
+        # Local accounts are re-checked on every request against the entry the session was
+        # issued from: any change made with src.web.accounts_admin (passphrase, authenticator,
+        # role, disable, remove) or turning local sign-in off ends the session, including a
+        # session that a login in flight created after the change.
         acct = state.accounts.current().get(sess.user) if state.accounts is not None else None
-        if acct is None or acct.disabled or acct.role != sess.role:
+        if (acct is None or acct.disabled or acct.role != sess.role
+                or not hmac.compare_digest(sess.cred, credential_fingerprint(acct))):
             reason = "account_changed"
     if reason is not None:
         state.sessions.delete(sess.token_hash)

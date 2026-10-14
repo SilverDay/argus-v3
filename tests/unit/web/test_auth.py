@@ -406,3 +406,56 @@ def test_oidc_cookie_cleared_after_callback(web, idp):
     resp, _ = oidc_login(client(app), idp)
     assert any(h.startswith(OIDC_COOKIE + "=;") for h in resp.headers.getlist("Set-Cookie"))
     assert ISSUER
+
+
+def test_session_from_login_in_flight_during_credential_reset_is_refused(local_web, events, monkeypatch):
+    """Review finding 2: a login that verified the OLD credentials while an administrator
+    replaced them must not leave a surviving session (session bound to the account entry)."""
+    import bcrypt as _bcrypt
+    from src.web import auth as auth_mod
+    from src.web.local_accounts import Account
+    app, state = local_web
+    real_verify = auth_mod.verify_local
+
+    def verify_then_reset(accounts, username, passphrase):
+        acct = real_verify(accounts, username, passphrase)      # old snapshot verified
+        old = state.accounts._accounts["olaf"]                  # admin runs `passwd olaf` now
+        state.accounts._accounts["olaf"] = Account("olaf", old.role,
+                                                   _bcrypt.hashpw(b"new-passphrase-99", _bcrypt.gensalt(12)),
+                                                   old.totp_seed)
+        return acct
+
+    monkeypatch.setattr(auth_mod, "verify_local", verify_then_reset)
+    c = client(app)
+    assert local_login(c, "olaf", "olaf-passphrase-1").status_code == 302    # in-flight login completes
+    resp = c.get("/history")
+    assert resp.status_code == 401                                           # ... but the session is dead
+    assert payloads(events, "web_auth")[-1]["reason"] == "account_changed"
+
+
+def test_unchanged_local_account_keeps_its_session(local_web):
+    app, state = local_web
+    c = client(app)
+    assert local_login(c, "olaf", "olaf-passphrase-1").status_code == 302
+    assert c.get("/history").status_code == 200
+    old = state.accounts._accounts["olaf"]
+    from src.web.local_accounts import Account
+    state.accounts._accounts["olaf"] = Account("olaf", old.role, old.hash, "")   # authenticator removed
+    assert c.get("/history").status_code == 401
+
+
+def test_session_db_without_cred_column_is_migrated(tmp_path):
+    import sqlite3
+    from src.web.sessions import SessionStore
+    path = tmp_path / "web.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user TEXT NOT NULL, role TEXT NOT NULL, "
+               "method TEXT NOT NULL, ip TEXT NOT NULL, csrf TEXT NOT NULL, created REAL NOT NULL, "
+               "last_seen REAL NOT NULL)")
+    db.commit()
+    db.close()
+    store = SessionStore(str(path), idle_seconds=900, max_seconds=3600)
+    token, sess = store.create("ada", "admin", "oidc", "10.0.0.5")
+    found, _ = store.lookup(token)
+    assert found is not None and found.cred == "" and found.user == "ada"
+    store.close()

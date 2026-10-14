@@ -470,7 +470,7 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
    - **Automated enrolment** (EST/ACME) is out of scope for v1.x.
    - **OIDC:** provider-neutral; the organisation's IdP is chosen at deployment. RBAC roles
      are `admin`, `operator` and `viewer`, mapped from IdP group claims
-     (`auth.web.oidc.role_map`). MFA is proven by `amr`/`acr`.
+     (`auth.web.oidc.roles`). MFA is proven by `amr`/`acr`.
 3. **Privacy and retention:** *Resolved:*
    - **VT hash sharing (1.5.8):** approved as a per-site opt-in. VirusTotal stays disabled
      by default; a site may enable hash-only lookups (no uploads) after its own privacy

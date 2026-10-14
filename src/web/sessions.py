@@ -12,13 +12,14 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import secrets
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 PENDING_TTL = 600
@@ -71,6 +72,20 @@ class SessionStore:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
 
+    @contextlib.contextmanager
+    def _tx(self) -> Iterator[None]:
+        """Read-modify-write as one transaction across processes: gunicorn workers each hold
+        their own connection, so the threading lock alone does not serialise them.
+        BEGIN IMMEDIATE takes SQLite's write lock before the read."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
+
     def close(self) -> None:
         with self._lock:
             self._db.close()
@@ -122,7 +137,7 @@ class SessionStore:
         """Consume the pending login for ``state`` if ``binding`` is this browser's cookie."""
         if not state or not binding or len(state) > 256 or len(binding) > 256:
             return None
-        with self._lock:
+        with self._tx():
             row = self._db.execute("SELECT binding_hash, nonce, verifier, created FROM oidc_pending"
                                    " WHERE state_hash=?", (_h(state),)).fetchone()
             if row is None or not secrets.compare_digest(row[0], _h(binding)):
@@ -146,7 +161,7 @@ class SessionStore:
 
     def record_failure(self, keys: list[str], max_failures: int, lockout_seconds: int) -> None:
         now = self.clock()
-        with self._lock:
+        with self._tx():
             for key in keys:
                 row = self._db.execute("SELECT count, locked_until FROM login_failures WHERE key=?", (key,)).fetchone()
                 count = 1 if row is None or (row[1] and row[1] <= now) else row[0] + 1
@@ -154,8 +169,9 @@ class SessionStore:
                 self._db.execute("INSERT OR REPLACE INTO login_failures VALUES (?,?,?,?)", (key, count, locked, now))
 
     def accept_totp(self, user: str, counter: int) -> bool:
-        """Record a used TOTP step; refuse a step that is not newer than the last one (replay)."""
-        with self._lock:
+        """Record a used TOTP step; refuse a step that is not newer than the last one (replay).
+        Check and update are one cross-process transaction, so a step is accepted once."""
+        with self._tx():
             row = self._db.execute("SELECT counter FROM totp_used WHERE user=?", (user,)).fetchone()
             if row is not None and counter <= row[0]:
                 return False

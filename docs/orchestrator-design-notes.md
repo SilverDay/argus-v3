@@ -47,7 +47,8 @@ partitions are never excluded. Partition type comes from libblkid `PART_ENTRY_TY
 
 ### Other decisions recorded
 - Blocked extensions: default severity SUSPICIOUS (configurable to THREAT).
-- VirusTotal mandatory: requires `virustotal.network_outage_policy_ref`.
+- VirusTotal: advisory-only since spec 1.5.9 (§15.2 #4); the mandatory role and its outage
+  settings were removed.
 - Environment-variable secrets: only with `USB_SCAN_DEV=1` (logged warning).
 - PIN lockout clock jumps: boot-clock based within a boot; after a reboot with the wall
   clock behind the record, re-armed once (≤ one extra lockout period).
@@ -69,10 +70,9 @@ partitions are never excluded. Partition type comes from libblkid `PART_ENTRY_TY
   is a per-scan hashing budget; files beyond it are reported (`virustotal_hash_budget=N`).
 - `vt_complete` is true only if every in-scope file was hashed and answered, no failure
   occurred and lookups finished within `finish_wait_seconds` after the local scan.
-  Advisory role: never changes the verdict (reason codes only). Mandatory role: incomplete
-  coverage → INCOMPLETE; with `on_quota_or_network_failure: error` a lookup failure or a
-  missing client → ERROR. A mandatory VT whose API key cannot be resolved fails the health
-  gate (`virustotal_unavailable` → NOT_READY); advisory gives a warning.
+  VirusTotal is advisory-only (spec 1.5.9): incomplete coverage never changes the verdict
+  (reason codes only), and an unresolvable API key is a health warning, never NOT_READY.
+  Reputation results themselves still raise SUSPICIOUS/THREAT per the thresholds.
 - Cache: SQLite (0600), known hashes `cache_ttl_days`, unknown hashes at most 1 day,
   entries with timestamps in the future (clock jump) are ignored; TTL 0 disables it.
 - Rate limit: sliding 60 s window shared by all sessions; two lookup workers per scan.

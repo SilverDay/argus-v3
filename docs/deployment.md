@@ -128,6 +128,22 @@ Hash sharing is approved as a per-site opt-in (spec §15.2 #3, 1.5.8).
 - Re-run `scripts/harden.sh` afterwards: the firewall only opens outbound HTTPS for the
   orchestrator account when VirusTotal is enabled in the configuration.
 
+## 6b. Station identity, privacy and retention (spec §15.2, 1.5.9)
+
+- **mTLS for event forwarding:**
+  1. `sudo scripts/station-cert.sh csr` prints the CSR and the public-key fingerprint.
+  2. The organisation's CA signs it as a client certificate (CN = station id).
+  3. `sudo scripts/station-cert.sh install CERT --ca /etc/usb-scan/pki/<ca>.pem`
+  4. Set `events.forwarding.client_cert_file` and `client_key_ref` as printed, and restart
+     `usb-scan-events`.
+  5. Renew with `csr --rotate`, then `install`.
+- **Pseudonyms:** off-device paths and serials are HMAC pseudonyms keyed by
+  `pseudonymization.key`, created at first boot. Escrow it together with
+  `events-checkpoint.key` (docs/secret-recovery.md). For cross-station correlation in the
+  SIEM, install one fleet key instead.
+- **Retention:** defaults are `events.retention_days: 180` and
+  `quarantine.retention_days: 30`. Set them to the site's regional obligations before go-live.
+
 ## 7. Recovery and maintenance
 
 | Situation | Action |
@@ -135,6 +151,7 @@ Hash sharing is approved as a per-site opt-in (spec §15.2 #3, 1.5.8).
 | Audit chain verification failed (`audit_chain_broken`) | investigate with `python -m src.events --verify`, compare with the SIEM copy, then `python -m src.events --acknowledge-tamper "<note>"` (as usbscan-events) |
 | A service crash-loops (3 restarts / 5 min) | it stays failed (spec §11); `journalctl -u <unit>`; GUI/LED show not ready |
 | Lost operator PIN | set a new one (section 3) |
+| SD card failure / rebuild | docs/secret-recovery.md (escrowed keys restored before first boot, everything else regenerated) |
 | Lost quarantine keyfile | `cryptsetup open /dev/sdX usbscan-quarantine` with the recovery passphrase, then `cryptsetup luksAddKey` a new keyfile |
 | USB keyboard needed on site | there is none by design; use SSH or the serial console, or stop `usbguard` deliberately and audit it |
 

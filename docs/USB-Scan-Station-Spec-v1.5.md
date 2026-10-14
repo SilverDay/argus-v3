@@ -1,6 +1,6 @@
 # USB Scan Station — Software Specification
 
-**Version:** 1.5.8 DRAFT  
+**Version:** 1.5.9 DRAFT  
 **Date:** 14 October 2026  
 **Baseline:** v1.5 DRAFT (13 October 2026)  
 **Target hardware:** Raspberry Pi 5 (8 GB RAM), High-Endurance/Industrial microSD, Pi 5 Active Cooler  
@@ -276,10 +276,10 @@ Persistent paths mapped to the data partition include: `/var/lib/usb-scan/` (dat
 
 ### 6.2 Validation Rules
 
-- `virustotal.role=mandatory` requires `enabled=true`, nonempty credential, a documented network-outage policy referenced in `virustotal.network_outage_policy_ref`, and `on_quota_or_network_failure` strictly set to `incomplete` or `error`.
+- VirusTotal is advisory-only (§15.2 #4, 1.5.9): `virustotal.enabled=true` requires a credential reference; there is no mandatory role.
 - `yara.role=mandatory` requires a valid signed, compiled ruleset, otherwise station is NOT_READY.
 - `auth.web.require_mfa=true` is mandatory for OIDC.
-- Non-empty `allow_extensions` constitutes a restricted policy scope and requires prominent report/UI disclosure.
+- Non-empty `allow_extensions` constitutes a restricted policy scope and requires prominent report/UI disclosure; files outside it make the result INCOMPLETE (§15.2 #6, 1.5.9).
 - Quarantine is enabled only if the encrypted mount has been verified, has sufficient capacity, and export rules are explicitly set.
 - `operator_hold.enabled=true` requires `operator_hold.max_duration_seconds` to be set (range: 15–300 seconds) and `operator_hold.allowed_verdicts` to enumerate CLEAN and/or SUSPICIOUS explicitly.
 
@@ -408,7 +408,7 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | AC-F03 | All supported partitions are inventoried and scanned; an unsupported or uninspected partition prevents CLEAN under default policy. |
 | AC-F04 | A device exceeding `max_device_capacity_gb` produces REJECTED with an explicit reason code; CLEAN is never returned. |
 | AC-F05 | The synthetic scan fixture (§3.8) produces a deterministic, known result visible in the scan event log within a maintenance test run. |
-| AC-F06 | Mandatory ClamAV failure or timeout yields ERROR/INCOMPLETE; advisory YARA/VT failure follows configured policy and is visible in report. |
+| AC-F06 | Mandatory ClamAV failure or timeout yields ERROR/INCOMPLETE; advisory YARA/VT failure follows configured policy (VT: always advisory) and is visible in report. |
 | AC-F07 | All required coverage metrics (`partitions_discovered`, `files_scanned`, `files_skipped`, skip reasons, bytes, and engine completion flags) are present in the emitted scan event record for every completed scan. |
 
 ### 14.2 Security and Isolation
@@ -452,16 +452,59 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | 1.5.5 DRAFT | 13 October 2026 | Admin web UI (owner decisions): read-only interface — no configuration reload or signature-update triggers from the web process (§9.1); front-end libraries vendored and integrity-verified, strict CSP without CDN; OIDC MFA proven by ID-token `amr`/`acr` claims; per-role data minimisation (file paths and device serials for administrators only); every data access audited, failing closed when the audit log is unavailable (§3.7, §10.2). |
 | 1.5.6 DRAFT | 13 October 2026 | Deployment (owner decisions): optional quarantine on a separate LUKS2 medium unlocked at boot by a root-only keyfile, with an escrowed recovery passphrase (§3.6, §8.3); YARA rulesets installable offline and optionally pulled over HTTPS, activated only after signature/hash/compile/rollback checks with an atomic switch (§7.3); service crash loops (3 restarts in 5 minutes) enforced by systemd start limits (§11); USBGuard rejects any HID-bearing device and authorises only all-mass-storage devices (§8.2). |
 | 1.5.7 DRAFT | 13 October 2026 | Host hardening (owner decisions): AppArmor profiles for all station services shipped in complain mode and promoted to enforce after on-device tuning (§8.1); outbound traffic restricted to a per-service allowlist in addition to default-deny inbound (§8.1); read-only root via `overlayroot=tmpfs:recurse=0` so the persistent data partition is not overlaid, with ClamAV signatures on the persistent partition and scanning disabled during the writable maintenance window (§5.3). |
-| **1.5.8 DRAFT** | **14 October 2026** | Acceptance (owner decisions): orchestrator hang recovery within 30 s (`WatchdogSec=15`, `TimeoutAbortSec=5`, `RestartSec=2`; §11, AC-R04 covers crash and hang); USBGuard HID rule uses `block` instead of `reject` so the rejection is recorded deterministically in the audit chain (§8.2, AC-S02); VirusTotal hash sharing approved as per-site opt-in, disabled by default (§15.2 #3); GUI ships English and German. |
+| 1.5.8 DRAFT | 14 October 2026 | Acceptance (owner decisions): orchestrator hang recovery within 30 s (`WatchdogSec=15`, `TimeoutAbortSec=5`, `RestartSec=2`; §11, AC-R04 covers crash and hang); USBGuard HID rule uses `block` instead of `reject` so the rejection is recorded deterministically in the audit chain (§8.2, AC-S02); VirusTotal hash sharing approved as per-site opt-in, disabled by default (§15.2 #3); GUI ships English and German. |
+| **1.5.9 DRAFT** | **14 October 2026** | Open decisions §15.2 #2–#6 resolved by the owner: on-device key + CSR enrolment for the station mTLS identity, provider-neutral OIDC with roles admin/operator/viewer (#2); keyed HMAC pseudonyms off-device, retention 180 d audit / 30 d quarantine adjustable per site, quarantine optional and off by default (#3); VirusTotal advisory-only, mandatory role removed (#4, §6.2); escrow of history-protecting secrets and regeneration of the rest (#5); allow-list-scoped scans never CLEAN when files were excluded (#6, §6.2). |
 
 ### 15.2 Implementation Decisions Still Requiring Prototype or Owner Approval
 
 1. **Throughput and readiness thresholds:** prototype benchmark must establish realistic mandatory limits and service-level objectives.
-2. **Fleet identity and mTLS bootstrap:** the mechanism for securely delivering unique mTLS certificates to individual appliances before field deployment requires explicit design and owner approval. The use of mTLS for event delivery once enrolled is decided (§9.2); the bootstrap process is not. Separately, select the organizational OIDC provider and define RBAC roles for named administrator accounts.
-3. **Privacy and retention:** approve path/serial pseudonymization, quarantine operation and regional retention obligations. *VT hash-sharing resolved (1.5.8):* approved as a per-site opt-in — VirusTotal stays disabled by default; a site may enable hash-only lookups (no uploads) after its own privacy approval.
-4. **Cloud mandatory mode:** decide whether VT is advisory-only in production or a conditional mandatory stage; specify clear offline behavior.
-5. **Secret recovery:** design secure deployment, backup and key restoration compatible with unattended boots and the chosen threat model.
-6. **Threat/policy definitions:** *Resolved for the default:* prohibited extensions are policy violations with default severity SUSPICIOUS (`scan.blocked_extension_severity`, configurable to THREAT). Still open: whether any explicit extension-scoped CLEAN result is acceptable for managed OT workflows.
+2. **Fleet identity and mTLS bootstrap:** *Resolved (1.5.9):*
+   - **Key generation:** each station generates its EC P-256 key on the device. It never
+     leaves the station; the Pi 5 has no TPM, so it is a root-owned file, 0640
+     root:usbscan-events.
+   - **Signing:** a CSR (CN = station id, EKU clientAuth) is exported over SSH or the serial
+     console and signed by the organisation's CA. The public-key fingerprint is compared out
+     of band.
+   - **Installation:** the certificate is installed after key, CN, expiry, EKU and chain
+     checks, and rotated without downtime (`scripts/station-cert.sh`).
+   - **Automated enrolment** (EST/ACME) is out of scope for v1.x.
+   - **OIDC:** provider-neutral; the organisation's IdP is chosen at deployment. RBAC roles
+     are `admin`, `operator` and `viewer`, mapped from IdP group claims
+     (`auth.web.oidc.role_map`). MFA is proven by `amr`/`acr`.
+3. **Privacy and retention:** *Resolved:*
+   - **VT hash sharing (1.5.8):** approved as a per-site opt-in. VirusTotal stays disabled
+     by default; a site may enable hash-only lookups (no uploads) after its own privacy
+     approval.
+   - **Off-device data (1.5.9):** file paths and device serials leave the station only as
+     keyed HMAC pseudonyms (`logging.filename_privacy: hash`). The key is generated per
+     station and escrowed; a fleet-wide key is optional for cross-station correlation.
+     Full detail stays in the on-device audit database, and the admin web shows it to the
+     `admin` role only.
+   - **Retention (1.5.9):** audit database 180 days, quarantine 30 days; the SIEM is the
+     long-term record. Sites adjust both to their regional obligations as a deployment step.
+   - **Quarantine (1.5.9):** optional and off by default. A site enables it with a separate
+     LUKS2 medium. It keeps THREAT-level evidence only, and export stays disabled until an
+     audited step-up flow exists.
+4. **Cloud mandatory mode:** *Resolved (1.5.9):* VirusTotal is advisory-only.
+   - It never changes a verdict through missing coverage and never gates readiness.
+   - Offline, out of quota or without a key, the result is unchanged and the reason codes
+     record the failure (`virustotal_unavailable:*`); a missing client is a health warning.
+   - The settings `virustotal.role`, `on_quota_or_network_failure` and
+     `network_outage_policy_ref` were removed. The configuration loader rejects them.
+5. **Secret recovery:** *Resolved (1.5.9):*
+   - **Escrowed:** secrets that protect history go to the organisation's vault: the event
+     checkpoint key, the pseudonymisation key and the quarantine recovery passphrase.
+   - **Regenerated on rebuild:** the broker key, the quarantine keyfile (re-keyed with the
+     recovery passphrase), the mTLS key (new CSR, old certificate revoked) and the operator
+     PIN.
+   - The procedure is in `docs/secret-recovery.md`.
+6. **Threat/policy definitions:** *Resolved:*
+   - Prohibited extensions are policy violations with default severity SUSPICIOUS
+     (`scan.blocked_extension_severity`, configurable to THREAT).
+   - Extension-scoped scans (1.5.9) fail closed. Any file outside `scan.allow_extensions` is
+     not inspected and makes the result INCOMPLETE (`restricted_extension_scope`). CLEAN
+     under an allow-list is possible only when every file was in scope, and it is still
+     disclosed.
 
 ### 15.3 Release Gate
 

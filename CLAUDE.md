@@ -100,6 +100,7 @@ docs/yara-worker-design-notes.md, docs/gui-design-notes.md, docs/led-design-note
 docs/events-design-notes.md, docs/web-design-notes.md, docs/acceptance-notes.md
 Deployment: docs/deployment.md (scripts/first-boot-setup.sh, systemd/, config/system/)
 Hardening: docs/hardening-checklist.md (scripts/harden.sh, scripts/maintenance-mode.sh, src/host/)
+Secrets/identity: docs/secret-recovery.md (escrow + rebuild), scripts/station-cert.sh (mTLS CSR)
 
 ## Commit Style
 

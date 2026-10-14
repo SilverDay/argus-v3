@@ -38,8 +38,11 @@
 
 ## Open items
 
-- **Which languages to ship** (spec §4.1 requires translation support; none besides
-  English are included yet).
-- Wayland kiosk compositor on the Pi (labwc vs. cage), app_id `usb-scan-kiosk`, touch
-  calibration, portrait/landscape (Phase 10).
-- Manual check of PIN randomization and touch long-press on the real 5" panel.
+- **Languages:** resolved (spec 1.5.8). English and German ship; `tests/unit/gui/test_translations.py`
+  checks completeness and placeholders. The German text needs a native-speaker review before
+  release.
+- **Kiosk compositor:** resolved in Phase 10. It is cage under `usb-scan-gui.service`
+  (app_id `usb-scan-kiosk`).
+- **Still to check on the Pi:**
+  - touch calibration and portrait/landscape on the real 5" panel;
+  - a manual check of PIN randomisation and the long-press (checklist 3.3).

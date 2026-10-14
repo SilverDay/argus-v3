@@ -2,8 +2,8 @@
 
 Precedence (highest first):
   1. THREAT      — any high-severity detection or high-severity policy violation
-  2. ERROR       — appliance/engine fault prevented reliable processing, or a mandatory
-                   engine failed with on_quota_or_network_failure=error (VirusTotal)
+  2. ERROR       — appliance/engine fault prevented reliable processing, or a required
+                   engine failed
   3. INCOMPLETE  — anything required was not inspected (engines, partitions, files, limits)
   4. SUSPICIOUS  — medium/low detections or medium-severity policy violations
   5. CLEAN       — everything required inspected by all mandatory engines, nothing found
@@ -72,8 +72,6 @@ def _incomplete_reasons(facts: ScanFacts, cfg: Config) -> list[str]:
         out.append("clamav_incomplete")
     if cfg.yara.enabled and cfg.yara.role is EngineRole.MANDATORY and cov.yara_complete is not True:
         out.append("yara_incomplete")
-    if cfg.virustotal.enabled and cfg.virustotal.role is EngineRole.MANDATORY and cov.vt_complete is not True:
-        out.append("virustotal_incomplete")
     if cov.partitions_discovered == 0:
         out.append("no_partitions")
     if cov.partitions_excluded and cfg.device.require_full_coverage:

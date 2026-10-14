@@ -147,14 +147,10 @@ def test_suspicious_and_policy_severity():
     assert evaluate(f, strict)[0] is Verdict.THREAT
 
 
-def test_mandatory_engines():
-    cfg = load_config_from_dict({"virustotal": {"enabled": True, "role": "mandatory",
-                                                "api_key_ref": "env:VT", "on_quota_or_network_failure": "incomplete",
-                                                "network_outage_policy_ref": "SEC-POL-17"}})
+def test_incomplete_vt_coverage_never_changes_verdict():
     f = facts(vt_complete=False)
-    assert evaluate(f, cfg) == (Verdict.INCOMPLETE, ["virustotal_incomplete"])
-    advisory = load_config_from_dict({"virustotal": {"enabled": True, "api_key_ref": "env:VT"}})
-    assert evaluate(f, advisory)[0] is Verdict.CLEAN
+    vt = load_config_from_dict({"virustotal": {"enabled": True, "api_key_ref": "env:VT"}})
+    assert evaluate(f, vt)[0] is Verdict.CLEAN
 
 
 def test_partition_exclusion_respects_require_full_coverage():

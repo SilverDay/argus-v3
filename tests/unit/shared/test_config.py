@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from src.shared.config import (
-    Config, ConfigError, EngineRole, FailurePolicy, load_config, load_config_from_dict,
+    Config, ConfigError, EngineRole, load_config, load_config_from_dict,
 )
 from src.shared.models import Verdict
 
@@ -53,26 +53,22 @@ def test_type_and_range_errors(section, key, value):
         load_config_from_dict(d)
 
 
-def test_vt_mandatory_requires_strict_failure_policy():
+@pytest.mark.parametrize("key,value", [("role", "mandatory"), ("role", "advisory"),
+                                       ("on_quota_or_network_failure", "error"),
+                                       ("network_outage_policy_ref", "SOC-RUNBOOK-12")])
+def test_vt_is_advisory_only(key, value):
+    """Spec §15.2 #4 (1.5.9): no mandatory VirusTotal; the removed keys name the decision."""
     d = template()
-    d["virustotal"].update(enabled=True, role="mandatory", api_key_ref="credential:vt_key",
-                           on_quota_or_network_failure="continue")
-    with pytest.raises(ConfigError, match="on_quota_or_network_failure"):
+    d["virustotal"].update(enabled=True, api_key_ref="credential:vt_key", **{key: value})
+    with pytest.raises(ConfigError, match="advisory-only"):
         load_config_from_dict(d)
-    d["virustotal"]["on_quota_or_network_failure"] = "incomplete"
-    with pytest.raises(ConfigError, match="network_outage_policy_ref"):
-        load_config_from_dict(d)
-    d["virustotal"]["network_outage_policy_ref"] = "https://intranet.example/policies/vt-outage"
-    cfg = load_config_from_dict(d)
-    assert cfg.virustotal.on_quota_or_network_failure is FailurePolicy.INCOMPLETE
 
 
-def test_vt_mandatory_requires_enabled_and_credential():
+def test_vt_enabled_requires_credential():
     d = template()
-    d["virustotal"].update(role="mandatory", on_quota_or_network_failure="error")
-    with pytest.raises(ConfigError) as exc:
+    d["virustotal"].update(enabled=True)
+    with pytest.raises(ConfigError, match="api_key_ref"):
         load_config_from_dict(d)
-    assert "enabled=true" in str(exc.value) and "api_key_ref" in str(exc.value)
 
 
 def test_yara_rules_require_signed_bundle_paths():

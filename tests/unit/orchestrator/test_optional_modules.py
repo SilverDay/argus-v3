@@ -86,23 +86,15 @@ async def test_vt_advisory_quota_failure_does_not_change_verdict(harness, env):
     assert len(lookups) <= 2              # circuit breaker: at most the 2 in-flight requests, not all 8 files
 
 
-async def test_vt_mandatory_failure_policies(harness, env):
-    mandatory = VT_ON | {"role": "mandatory", "network_outage_policy_ref": "SOC-RUNBOOK-12"}
-    for policy, expected in (("incomplete", "INCOMPLETE"), ("error", "ERROR")):
-        build, _ = vt_factory(env["tmp"], {}, fail=503)
-        orch, *_, events, _ = harness({"virustotal": mandatory | {"on_quota_or_network_failure": policy}}, vt=build)
-        await start(orch)
-        await run_scan(orch)
-        assert verdicts(events)[0]["verdict"] == expected, policy
-
-
-async def test_vt_mandatory_without_client_is_not_ready(harness, env):
-    mandatory = VT_ON | {"role": "mandatory", "network_outage_policy_ref": "SOC-RUNBOOK-12",
-                         "on_quota_or_network_failure": "incomplete"}
-    orch, *_ = harness({"virustotal": mandatory})               # key could not be resolved -> no client
-    await orch.check_health()
-    assert "virustotal_unavailable" in orch.health.failures
-    orch2, *_ = harness({"virustotal": VT_ON})                  # advisory: warning only
+async def test_vt_failure_never_changes_verdict_or_readiness(harness, env):
+    """Advisory only (spec §15.2 #4): lookup failure -> reason code, missing client -> warning."""
+    build, _ = vt_factory(env["tmp"], {}, fail=503)
+    orch, *_, events, _ = harness({"virustotal": VT_ON}, vt=build)
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == "CLEAN" and v["coverage"]["vt_complete"] is False
+    orch2, *_ = harness({"virustotal": VT_ON})                  # key could not be resolved -> no client
     await orch2.check_health()
     assert "virustotal_unavailable" in orch2.health.warnings and orch2.health.passed
 

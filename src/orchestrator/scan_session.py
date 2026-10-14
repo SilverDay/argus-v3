@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from src.shared.config import Config, EngineRole, FailurePolicy, normalise_partition_type
+from src.shared.config import Config, normalise_partition_type
 from src.shared.models import (
     CoverageMetrics, EventType, ScanEvent, ScanMetadata, ScanResult, Severity, SkipReason, ThreatEntry, Verdict,
     utc_now,
@@ -316,9 +316,6 @@ class ScanSession:
             cov.vt_complete = False
             if self.vt is None:
                 self.notes.append("virustotal_unavailable:client_missing")
-                if self.cfg.virustotal.role is EngineRole.MANDATORY and \
-                        self.cfg.virustotal.on_quota_or_network_failure is FailurePolicy.ERROR:
-                    self.facts.engine_failures.append("virustotal_client_missing")
             return
         cov.vt_complete = (
             session.complete and self._vt_finished and not self._vt_missed
@@ -327,9 +324,6 @@ class ScanSession:
         )
         if session.failure:
             self.notes.append(f"virustotal_unavailable:{session.failure}")
-            vt = self.cfg.virustotal
-            if vt.role is EngineRole.MANDATORY and vt.on_quota_or_network_failure is FailurePolicy.ERROR:
-                self.facts.engine_failures.append(f"virustotal_{session.failure}")
         elif not self._vt_finished:
             self.notes.append(f"virustotal_pending={len(session.refs) - len(session.results)}")
         self.notes.extend(f"virustotal_{k}={v}" for k, v in sorted(self._vt_missed.items()))

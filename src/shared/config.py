@@ -40,12 +40,6 @@ class EngineRole(str, Enum):
     ADVISORY = "advisory"
 
 
-class FailurePolicy(str, Enum):
-    CONTINUE = "continue"
-    INCOMPLETE = "incomplete"
-    ERROR = "error"
-
-
 class PolicySeverity(str, Enum):
     """Verdict produced by a blocked-extension policy violation (spec §3.4)."""
     THREAT = "threat"
@@ -236,12 +230,10 @@ class YaraConfig:
 
 @dataclass(frozen=True)
 class VirusTotalConfig:
+    # Advisory only (owner decision, spec §15.2 #4, 1.5.9): VirusTotal never changes a verdict
+    # through missing coverage and never gates readiness; there is no mandatory role.
     enabled: bool = False
-    role: EngineRole = EngineRole.ADVISORY
     api_key_ref: str = field(default="", metadata=_secret_ref())
-    on_quota_or_network_failure: FailurePolicy = FailurePolicy.CONTINUE
-    # Spec §6.2: mandatory mode needs a documented outage policy (document ID or URL).
-    network_outage_policy_ref: str = ""
     cache_ttl_days: int = field(default=7, metadata=_range(0, 365))
     rate_limit_per_minute: int = field(default=4, metadata=_range(1, 10_000))
     large_file_hash_budget_mb: int = field(default=4096, metadata=_range(1, 1_000_000))
@@ -561,6 +553,15 @@ def _build(tp: Any, value: Any, path: str, meta: typing.Mapping[str, Any] | None
     raise ConfigError(f"{path}: unsupported schema type {tp!r}")
 
 
+# Settings removed by owner decisions; the loader names the reason instead of a bare error.
+_VT_ADVISORY = "removed in spec 1.5.9: VirusTotal is advisory-only (§15.2 #4)"
+REMOVED_KEYS = {
+    "virustotal.role": _VT_ADVISORY,
+    "virustotal.on_quota_or_network_failure": _VT_ADVISORY,
+    "virustotal.network_outage_policy_ref": _VT_ADVISORY,
+}
+
+
 def _build_dataclass(cls: type, value: Any, path: str) -> Any:
     if value is None:
         value = {}
@@ -570,7 +571,9 @@ def _build_dataclass(cls: type, value: Any, path: str) -> Any:
     fields = {f.name: f for f in dataclasses.fields(cls)}
     unknown = sorted(set(value) - set(fields))
     if unknown:
-        raise ConfigError(f"{path or '<root>'}: unknown key(s): {', '.join(map(str, unknown))}")
+        hints = [REMOVED_KEYS[k] for k in (f"{path}.{u}" for u in unknown) if k in REMOVED_KEYS]
+        raise ConfigError(f"{path or '<root>'}: unknown key(s): {', '.join(map(str, unknown))}"
+                          + (f" ({'; '.join(hints)})" if hints else ""))
     kwargs = {}
     for name, f in fields.items():
         if name in value:
@@ -611,15 +614,6 @@ def validate(cfg: Config) -> None:
         errors.append("clamav.role: ClamAV is the mandatory engine and cannot be advisory")
 
     vt = cfg.virustotal
-    if vt.role is EngineRole.MANDATORY:
-        if not vt.enabled:
-            errors.append("virustotal.role=mandatory requires virustotal.enabled=true")
-        if not vt.api_key_ref:
-            errors.append("virustotal.role=mandatory requires virustotal.api_key_ref")
-        if vt.on_quota_or_network_failure not in (FailurePolicy.INCOMPLETE, FailurePolicy.ERROR):
-            errors.append("virustotal.role=mandatory requires on_quota_or_network_failure in {incomplete, error}")
-        if not vt.network_outage_policy_ref.strip():
-            errors.append("virustotal.role=mandatory requires network_outage_policy_ref (documented outage policy)")
     if vt.enabled and not vt.api_key_ref:
         errors.append("virustotal.enabled=true requires virustotal.api_key_ref")
     if vt.threat_min_malicious < vt.suspicious_min_malicious:

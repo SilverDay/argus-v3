@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.shared.auth import AuthManager
-from src.shared.config import Config, EngineRole
+from src.shared.config import Config
 from src.shared.ipc import PeerCredentials
 from src.shared.models import (
     DeviceLifecycle, EventType, GUIState, ScanEvent, ScanResult, Verdict,
@@ -179,8 +179,8 @@ class Orchestrator:
     async def _optional_module_checks(self, report: HealthReport) -> None:
         vt = self.cfg.virustotal
         if vt.enabled and self.vt is None:
-            # Key could not be resolved at start-up. Mandatory VT cannot inspect anything.
-            (report.failures if vt.role is EngineRole.MANDATORY else report.warnings).append("virustotal_unavailable")
+            # Key could not be resolved at start-up. Advisory only: warning, never NOT_READY.
+            report.warnings.append("virustotal_unavailable")
         if self.cfg.quarantine.quarantine_on_threat:
             try:
                 if self.quarantine is None:

@@ -112,11 +112,9 @@ yara:
   keep_versions: 3                      # rules/versions/<n> kept for rollback by an admin
 
 virustotal:
-  enabled: false                        # hash-only lookups; no file uploads
-  role: advisory
+  enabled: false                        # per-site opt-in after privacy approval; hash-only, no uploads
+                                        # advisory only (spec §15.2 #4): never gates a verdict or readiness
   api_key_ref: ""                       # e.g. credential:vt_api_key
-  on_quota_or_network_failure: continue # mandatory role requires incomplete | error
-  network_outage_policy_ref: ""         # mandatory role requires a documented outage policy (doc ID/URL)
   cache_ttl_days: 7
   rate_limit_per_minute: 4
   large_file_hash_budget_mb: 4096       # per-scan SHA-256 hashing budget (not an upload limit)

@@ -142,9 +142,10 @@ pin:
 
 auth:
   web:
+    # Sign-in methods (spec §10.2, 1.5.10): OIDC, local accounts, or both (at least one).
     oidc_enabled: true
-    require_mfa: true                   # mandatory with OIDC
-    local_fallback_allowed: false       # isolated management networks only (only used without OIDC)
+    require_mfa: true                   # mandatory with OIDC (amr/acr proof)
+    local_enabled: false                # username + passphrase (+ TOTP), managed with src.web.accounts_admin
     oidc:
       issuer: ""                        # https://idp.example.org/realms/mgmt (exact issuer string)
       client_id: ""
@@ -163,7 +164,9 @@ auth:
       ca_file: ""
       timeout_seconds: 10
     local:
-      accounts_ref: ""                  # file: or credential: — lines "username:role:bcrypt_hash" (cost >= 12)
+      accounts_ref: file:/etc/usb-scan/secrets/web-accounts   # written only by src.web.accounts_admin
+      require_totp: true                # second factor (RFC 6238); false = documented deviation from spec §10.2
+      min_passphrase_length: 12
       max_failed_attempts: 5            # per account and per client address
       lockout_minutes: 15
 

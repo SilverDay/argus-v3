@@ -21,7 +21,9 @@ profile usb-scan-admin flags=(complain) {
   include <abstractions/openssl>
   include <abstractions/ssl_certs>
   /opt/usb-scan/.venv/bin/gunicorn ix,
-  # OIDC client secret / local accounts via systemd credentials; IdP CA bundles
+  # local accounts file (src.web.accounts_admin, re-read on change)
+  /etc/usb-scan/secrets/web-accounts r,
+  # OIDC client secret via systemd credentials; IdP CA bundles
   /run/credentials/usb-scan-admin.service/ r,
   /run/credentials/usb-scan-admin.service/* r,
   /etc/usb-scan/pki/ r,

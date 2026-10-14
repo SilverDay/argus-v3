@@ -12,6 +12,7 @@ import secrets
 from flask import Blueprint, Response, current_app, g, make_response, redirect, render_template, request, url_for
 
 from .events_client import EventsUnavailable
+from . import totp
 from .local_accounts import verify as verify_local
 from .oidc import OidcError, pkce_pair
 from .security import (
@@ -54,7 +55,7 @@ def _fail(user: str, method: str, reason: str, status: int = 401) -> Response:
 def _login_ctx() -> dict:
     st = _state()
     return {"oidc_enabled": st.oidc is not None, "local_enabled": st.accounts is not None,
-            "login_token": login_token()}
+            "totp_required": st.cfg.auth.web.local.require_totp, "login_token": login_token()}
 
 
 @bp.get("/login")
@@ -66,22 +67,38 @@ def login() -> Response:
 
 @bp.post("/login/local")
 def login_local() -> Response:
+    """Username + passphrase (+ TOTP when required). Every failure reason is audited but the
+    browser always sees the same message; each failure counts towards the lockout."""
     st = _state()
     if st.accounts is None:
         return make_response(render_template("login.html", error=GENERIC_FAILURE, **_login_ctx()), 404)
     username = request.form.get("username", "")[:64].strip().lower()
     passphrase = request.form.get("passphrase", "")
+    code = request.form.get("totp", "")[:16]
     lc = st.cfg.auth.web.local
     keys = [f"user:{username}", f"ip:{client_ip()}"]
     if st.sessions.locked(*keys):
         verify_local({}, username, passphrase)           # same cost as a real attempt
         return _fail(username, "local", "locked_out", 429)
-    acct = verify_local(st.accounts, username, passphrase)
+    acct = verify_local(st.accounts.current(), username, passphrase)
+    reason = None
     if acct is None:
+        reason = "bad_credentials"
+    elif acct.disabled:
+        reason = "account_disabled"
+    elif lc.require_totp:
+        counter = totp.verify(acct.totp_seed, code) if acct.totp_seed else None
+        if not acct.totp_seed:
+            reason = "totp_not_enrolled"
+        elif counter is None:
+            reason = "totp_invalid"
+        elif not st.sessions.accept_totp(acct.username, counter):
+            reason = "totp_replayed"
+    if reason is not None:
         st.sessions.record_failure(keys, lc.max_failed_attempts, lc.lockout_minutes * 60)
-        return _fail(username, "local", "bad_credentials")
+        return _fail(username, "local", reason)
     st.sessions.clear_failures(*keys)
-    return _start_session(acct.username, acct.role, "local")
+    return _start_session(acct.username, acct.role, "local+totp" if lc.require_totp else "local")
 
 
 @bp.post("/auth/oidc/start")

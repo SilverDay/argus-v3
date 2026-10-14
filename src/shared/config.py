@@ -294,18 +294,26 @@ class OidcConfig:
 
 @dataclass(frozen=True)
 class LocalAccountsConfig:
-    """Isolated-network fallback (spec §10.2). File format, one account per line:
-    ``username:role:bcrypt_hash`` (role = viewer|operator|admin), bcrypt cost >= 12."""
-    accounts_ref: str = field(default="", metadata=_secret_ref())
+    """Local named accounts (spec §10.2, 1.5.10). Managed with ``python -m src.web.accounts_admin``.
+
+    File (``accounts_ref``, a ``file:`` reference, 0640 root:usbscan-web), one account per line:
+    ``username:role:bcrypt_hash[:totp_base32[:disabled]]``; bcrypt cost >= 12.
+    """
+    accounts_ref: str = field(default="file:/etc/usb-scan/secrets/web-accounts", metadata=_secret_ref())
+    # Second factor (RFC 6238 TOTP). Owner decision 1.5.10: required by default; a site may
+    # switch it off as a documented deviation from spec §10.2 (warning logged at start-up).
+    require_totp: bool = True
+    min_passphrase_length: int = field(default=12, metadata=_range(10, 64))
     max_failed_attempts: int = field(default=5, metadata=_range(1, 100))
     lockout_minutes: int = field(default=15, metadata=_range(1, 24 * 60))
 
 
 @dataclass(frozen=True)
 class WebAuthConfig:
+    # Owner decision 1.5.10: OIDC, local accounts or both; at least one when the admin web is on.
     oidc_enabled: bool = True
-    require_mfa: bool = True
-    local_fallback_allowed: bool = False
+    require_mfa: bool = True              # OIDC: amr/acr proof; local accounts: see local.require_totp
+    local_enabled: bool = False
     oidc: OidcConfig = OidcConfig()
     local: LocalAccountsConfig = LocalAccountsConfig()
 
@@ -562,6 +570,7 @@ REMOVED_KEYS = {
     "virustotal.role": _VT_ADVISORY,
     "virustotal.on_quota_or_network_failure": _VT_ADVISORY,
     "virustotal.network_outage_policy_ref": _VT_ADVISORY,
+    "auth.web.local_fallback_allowed": "renamed in spec 1.5.10: use auth.web.local_enabled",
 }
 
 
@@ -807,13 +816,10 @@ def _validate_web(cfg: Config, errors: list[str]) -> None:
             errors.append("auth.web.oidc.roles: map at least one claim value to a role")
         if o.ca_file and not _abs_path_ok(o.ca_file):
             errors.append("auth.web.oidc.ca_file: must be an absolute path without '..'")
-    else:
-        if not a.local_fallback_allowed:
-            errors.append("admin_web.enabled requires OIDC or an explicitly allowed local fallback")
-        elif not a.local.accounts_ref:
-            errors.append("auth.web.local.accounts_ref is required for the local fallback")
-        elif a.local.accounts_ref.startswith("env:"):
-            errors.append("auth.web.local.accounts_ref must be a file: or credential: reference")
+    if not (a.oidc_enabled or a.local_enabled):
+        errors.append("admin_web.enabled requires auth.web.oidc_enabled and/or auth.web.local_enabled")
+    if a.local_enabled and not a.local.accounts_ref.startswith("file:"):
+        errors.append("auth.web.local.accounts_ref must be a file: reference (managed by src.web.accounts_admin)")
 
 
 def _validate_alerts(a: AlertsConfig, errors: list[str]) -> None:

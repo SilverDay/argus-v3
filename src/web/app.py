@@ -22,7 +22,7 @@ from src.shared.secret_refs import resolve_secret
 
 from . import auth, views
 from .events_client import EventsClient, EventsUnavailable
-from .local_accounts import Account, parse_accounts
+from .local_accounts import AccountsFile, StaticAccounts
 from .oidc import OidcProvider
 from .security import ROLE_RANK, audit, check_csrf, load_session, security_headers
 from .sessions import SessionStore
@@ -36,11 +36,12 @@ class WebState:
     events: Any
     sessions: SessionStore
     oidc: OidcProvider | None
-    accounts: dict[str, Account] | None
+    accounts: AccountsFile | StaticAccounts | None    # .current() -> {username: Account}
 
 
 def build_state(cfg: Config, *, events: Any = None, oidc: OidcProvider | None = None,
-                accounts: dict[str, Account] | None = None) -> WebState:
+                accounts: AccountsFile | StaticAccounts | None = None) -> WebState:
+    """OIDC and local accounts are independent sign-in methods (owner decision, spec 1.5.10)."""
     w, a = cfg.admin_web, cfg.auth.web
     os.makedirs(w.state_dir, mode=0o700, exist_ok=True)
     sessions = SessionStore(os.path.join(w.state_dir, "web.db"), idle_seconds=w.session_idle_minutes * 60,
@@ -50,10 +51,14 @@ def build_state(cfg: Config, *, events: Any = None, oidc: OidcProvider | None = 
         oidc = OidcProvider(a.oidc, secret, w.public_url.rstrip("/") + "/auth/oidc/callback")
     if not a.oidc_enabled:
         oidc = None
-    if a.local_fallback_allowed and not a.oidc_enabled and accounts is None:
-        accounts = parse_accounts(resolve_secret(a.local.accounts_ref, strip=False).decode())
-    if a.oidc_enabled or not a.local_fallback_allowed:
-        accounts = None                                    # local fallback only without OIDC (spec §10.2)
+    if not a.local_enabled:
+        accounts = None
+    elif accounts is None:
+        accounts = AccountsFile(a.local.accounts_ref)
+        accounts.current()                                  # load now; errors are logged, never fatal
+    if a.local_enabled and not a.local.require_totp:
+        log.warning("local admin accounts without a second factor (auth.web.local.require_totp=false): "
+                    "documented deviation from spec section 10.2")
     return WebState(cfg, events or EventsClient(cfg.events.socket_path), sessions, oidc, accounts)
 
 

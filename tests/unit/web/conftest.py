@@ -21,7 +21,7 @@ from src.events.store import EventStore
 from src.shared.config import load_config_from_dict
 from src.web.app import build_state, create_app
 from src.web.events_client import EventsClient
-from src.web.local_accounts import parse_accounts
+from src.web.local_accounts import StaticAccounts, parse_accounts
 from src.web.oidc import OidcProvider
 
 ISSUER = "https://idp.example.org/realms/mgmt"
@@ -89,13 +89,18 @@ class FakeIdP:
         return httpx.Response(404)
 
 
-def make_cfg(tmp_path, *, oidc: bool = True, **overrides: Any):
+# Fixed RFC 6238 seeds for the test accounts (base32, 160 bits).
+TOTP_SEEDS = {"ada": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "olaf": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+              "vic": "MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43U"}
+
+
+def make_cfg(tmp_path, *, oidc: bool = True, local: bool | None = None, **overrides: Any):
     raw: dict[str, Any] = {
         "station": {"data_dir": str(tmp_path)},
         "events": {"socket_path": str(tmp_path / "events.sock")},
         "admin_web": {"enabled": True, "public_url": PUBLIC, "trusted_proxies": 0, "state_dir": str(tmp_path / "web")},
         "host": {"management_networks": ["10.0.0.0/8", "192.0.2.0/24", "127.0.0.0/8"]},
-        "auth": {"web": {"oidc_enabled": oidc, "require_mfa": True, "local_fallback_allowed": not oidc,
+        "auth": {"web": {"oidc_enabled": oidc, "require_mfa": True, "local_enabled": (not oidc) if local is None else local,
                          "oidc": {"issuer": ISSUER, "client_id": CLIENT_ID,
                                   "roles": {"admin": ["scan-admins"], "operator": ["scan-ops"],
                                             "viewer": ["scan-view"]}},
@@ -146,8 +151,10 @@ def web(tmp_path, events, idp):
 @pytest.fixture
 def local_web(tmp_path, events, account_hashes):
     cfg = make_cfg(tmp_path, oidc=False)
-    accounts = parse_accounts(f"ada:admin:{account_hashes['ada']}\nolaf:operator:{account_hashes['olaf']}\n"
-                              f"vic:viewer:{account_hashes['vic']}\n")
+    accounts = StaticAccounts(parse_accounts(
+        f"ada:admin:{account_hashes['ada']}:{TOTP_SEEDS['ada']}\n"
+        f"olaf:operator:{account_hashes['olaf']}:{TOTP_SEEDS['olaf']}\n"
+        f"vic:viewer:{account_hashes['vic']}:{TOTP_SEEDS['vic']}\n"))
     app, state = _build(tmp_path, cfg, EventsClient(events.path), accounts=accounts)
     yield app, state
     state.sessions.close()

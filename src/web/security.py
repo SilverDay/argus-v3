@@ -74,12 +74,21 @@ def load_session() -> Response | None:
     sess, reason = state.sessions.lookup(token)
     if sess is None:
         return None
+    reason = None
     if not hmac.compare_digest(sess.ip, client_ip()):
         # IP binding: a session cookie replayed from another address is revoked outright.
+        reason = f"ip_changed_from:{sess.ip}"
+    elif sess.method.startswith("local"):
+        # Local accounts are re-checked on every request: disabling, removing or re-roling an
+        # account (src.web.accounts_admin) ends its sessions at once; so does turning local
+        # sign-in off.
+        acct = state.accounts.current().get(sess.user) if state.accounts is not None else None
+        if acct is None or acct.disabled or acct.role != sess.role:
+            reason = "account_changed"
+    if reason is not None:
         state.sessions.delete(sess.token_hash)
         try:
-            audit_auth("session_rejected", user=sess.user, role=sess.role, method=sess.method,
-                       reason=f"ip_changed_from:{sess.ip}")
+            audit_auth("session_rejected", user=sess.user, role=sess.role, method=sess.method, reason=reason)
         except EventsUnavailable:
             log.error("audit unavailable while rejecting a session")
         resp = Response("Session invalid. Please sign in again.", status=401, mimetype="text/plain")

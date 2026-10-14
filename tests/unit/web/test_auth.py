@@ -6,6 +6,7 @@ import pytest
 from joserfc.jwk import OctKey, RSAKey
 
 from src.web.app import create_app
+from src.web.events_client import EventsClient
 from src.web.local_accounts import AccountsError, parse_accounts
 from src.web.security import LOGIN_COOKIE, OIDC_COOKIE, SESSION_COOKIE
 from tests.unit.web.conftest import (
@@ -223,8 +224,17 @@ def test_session_token_stored_hashed(web, idp):
 
 # --- local fallback -------------------------------------------------------------------------------------
 
-def local_login(c, user, passphrase):
-    return c.post("/login/local", data={"csrf_token": login_token(c), "username": user, "passphrase": passphrase})
+def totp_code(user, offset=0):
+    from tests.unit.web.conftest import TOTP_SEEDS
+    from src.web import totp
+    return totp.hotp(totp._key(TOTP_SEEDS[user]), int(time.time() // totp.STEP_SECONDS) + offset)
+
+
+def local_login(c, user, passphrase, code=None):
+    if code is None:
+        code = totp_code(user) if user in ("ada", "olaf", "vic") else "123456"
+    return c.post("/login/local", data={"csrf_token": login_token(c), "username": user,
+                                        "passphrase": passphrase, "totp": code})
 
 
 def test_local_login_and_generic_failures(local_web, events):
@@ -239,6 +249,54 @@ def test_local_login_and_generic_failures(local_web, events):
     assert ok.status_code == 302
     assert [p["result"] for p in payloads(events, "web_auth")] == ["failure", "failure", "success"]
     assert payloads(events, "web_auth")[2]["role"] == "admin"
+    assert payloads(events, "web_auth")[2]["method"] == "local+totp"
+
+
+def test_local_totp_required_and_not_replayable(local_web, events):
+    app, _ = local_web
+    wrong = local_login(client(app), "ada", "ada-passphrase-1", code="000000" if totp_code("ada") != "000000" else "111111")
+    missing = local_login(client(app), "ada", "ada-passphrase-1", code="")
+    assert wrong.status_code == missing.status_code == 401
+    code = totp_code("ada")
+    assert local_login(client(app), "ada", "ada-passphrase-1", code=code).status_code == 302
+    assert local_login(client(app), "ada", "ada-passphrase-1", code=code).status_code == 401     # replay
+    reasons = [p.get("reason") for p in payloads(events, "web_auth") if p["result"] == "failure"]
+    assert reasons == ["totp_invalid", "totp_invalid", "totp_replayed"]
+    assert local_login(client(app), "ada", "ada-passphrase-1", code=totp_code("ada", 1)).status_code == 302
+
+
+def test_local_disabled_and_unenrolled_accounts(tmp_path, events, account_hashes):
+    from src.web.local_accounts import StaticAccounts, parse_accounts
+    from tests.unit.web.conftest import TOTP_SEEDS, _build, make_cfg
+    cfg = make_cfg(tmp_path, oidc=False)
+    accounts = StaticAccounts(parse_accounts(f"ada:admin:{account_hashes['ada']}:{TOTP_SEEDS['ada']}:disabled\n"
+                                             f"olaf:operator:{account_hashes['olaf']}\n"))
+    app, state = _build(tmp_path, cfg, EventsClient(events.path), accounts=accounts)
+    try:
+        assert local_login(client(app), "ada", "ada-passphrase-1").status_code == 401
+        assert local_login(client(app), "olaf", "olaf-passphrase-1").status_code == 401
+        reasons = [p.get("reason") for p in payloads(events, "web_auth")]
+        assert reasons == ["account_disabled", "totp_not_enrolled"]
+    finally:
+        state.sessions.close()
+
+
+def test_local_without_totp_when_site_disables_it(tmp_path, events, account_hashes, caplog):
+    from src.web.local_accounts import StaticAccounts, parse_accounts
+    from tests.unit.web.conftest import _build, make_cfg
+    cfg = make_cfg(tmp_path, oidc=False, auth={"web": {
+        "oidc_enabled": False, "local_enabled": True,
+        "local": {"accounts_ref": "file:/nonexistent/accounts", "require_totp": False}}})
+    with caplog.at_level("WARNING"):
+        app, state = _build(tmp_path, cfg, EventsClient(events.path),
+                            accounts=StaticAccounts(parse_accounts(f"vic:viewer:{account_hashes['vic']}\n")))
+    try:
+        assert "deviation from spec section 10.2" in caplog.text
+        assert "Authenticator code" not in client(app).get("/login").get_data(as_text=True)
+        assert local_login(client(app), "vic", "vic-passphrase-1", code="").status_code == 302
+        assert payloads(events, "web_auth")[-1]["method"] == "local"
+    finally:
+        state.sessions.close()
 
 
 def test_local_lockout_persists(local_web):
@@ -255,10 +313,29 @@ def test_local_passphrase_length_limit(local_web):
     assert local_login(client(app), "ada", "x" * 73).status_code == 401
 
 
-def test_oidc_disables_local_accounts(web):
+def test_local_route_off_when_only_oidc(web):
     app, _ = web
     c = client(app)
     assert local_login(c, "ada", "ada-passphrase-1").status_code == 404
+    assert "Sign in with account" not in client(app).get("/login").get_data(as_text=True)
+
+
+def test_both_methods_side_by_side(tmp_path, events, idp, account_hashes):
+    """Owner decision 1.5.10: OIDC and local accounts can be enabled together."""
+    from src.web.local_accounts import StaticAccounts, parse_accounts
+    from tests.unit.web.conftest import TOTP_SEEDS, _build, make_cfg, oidc_login
+    cfg = make_cfg(tmp_path, oidc=True, local=True)
+    accounts = StaticAccounts(parse_accounts(f"ada:admin:{account_hashes['ada']}:{TOTP_SEEDS['ada']}\n"))
+    app, state = _build(tmp_path, cfg, EventsClient(events.path), idp, accounts=accounts)
+    try:
+        page = client(app).get("/login").get_data(as_text=True)
+        assert "Sign in with single sign-on" in page and "Sign in with account" in page
+        assert local_login(client(app), "ada", "ada-passphrase-1").status_code == 302
+        resp, _ = oidc_login(client(app), idp)
+        assert resp.status_code == 302
+        assert [p["method"] for p in payloads(events, "web_auth")] == ["local+totp", "oidc"]
+    finally:
+        state.sessions.close()
 
 
 def test_accounts_file_validation(account_hashes):

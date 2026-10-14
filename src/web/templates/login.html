@@ -15,8 +15,8 @@
     <input type="hidden" name="csrf_token" value="{{ login_token }}">
     <label>Username <input name="username" required maxlength="64" autocomplete="username"></label>
     <label>Passphrase <input name="passphrase" type="password" required maxlength="200" autocomplete="current-password"></label>
-    <button type="submit" class="primary">Sign in</button>
-    <p class="muted">Local accounts are for isolated management networks only.</p>
+    {% if totp_required %}<label>Authenticator code <input name="totp" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code"></label>{% endif %}
+    <button type="submit" class="primary">Sign in with account</button>
   </form>
   {% endif %}
   {% if not oidc_enabled and not local_enabled %}<p>No sign-in method is configured.</p>{% endif %}

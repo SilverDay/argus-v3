@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS oidc_pending (
     verifier TEXT NOT NULL, created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS login_failures (
     key TEXT PRIMARY KEY, count INTEGER NOT NULL, locked_until REAL NOT NULL DEFAULT 0, updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS totp_used (user TEXT PRIMARY KEY, counter INTEGER NOT NULL);
 """
 
 
@@ -151,6 +152,15 @@ class SessionStore:
                 count = 1 if row is None or (row[1] and row[1] <= now) else row[0] + 1
                 locked = now + lockout_seconds if count >= max_failures else 0
                 self._db.execute("INSERT OR REPLACE INTO login_failures VALUES (?,?,?,?)", (key, count, locked, now))
+
+    def accept_totp(self, user: str, counter: int) -> bool:
+        """Record a used TOTP step; refuse a step that is not newer than the last one (replay)."""
+        with self._lock:
+            row = self._db.execute("SELECT counter FROM totp_used WHERE user=?", (user,)).fetchone()
+            if row is not None and counter <= row[0]:
+                return False
+            self._db.execute("INSERT OR REPLACE INTO totp_used VALUES (?,?)", (user, counter))
+            return True
 
     def clear_failures(self, *keys: str) -> None:
         with self._lock:

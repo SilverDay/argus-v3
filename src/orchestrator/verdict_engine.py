@@ -8,13 +8,17 @@ Precedence (highest first):
   4. SUSPICIOUS  — medium/low detections or medium-severity policy violations
   5. CLEAN       — everything required inspected by all mandatory engines, nothing found
 A confirmed threat always wins; missing inspection can never become CLEAN.
+Files outside a configured extension allow-list (``scan.allow_extensions``) count as not
+inspected (owner decision, spec §15.2 #6, 1.5.9): any such file makes the result INCOMPLETE
+with ``restricted_extension_scope``. CLEAN under an allow-list is possible only when every
+file was in scope, and it still discloses the restricted configuration.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from src.shared.config import Config, EngineRole, PolicySeverity
-from src.shared.models import CoverageMetrics, Severity, ThreatEntry, Verdict
+from src.shared.models import CoverageMetrics, Severity, SkipReason, ThreatEntry, Verdict
 
 
 @dataclass
@@ -78,4 +82,6 @@ def _incomplete_reasons(facts: ScanFacts, cfg: Config) -> list[str]:
         out.append("partition_not_inspected")
     if cov.has_uninspected_content():
         out.append("content_not_inspected")
+    if cov.skip_reasons.get(SkipReason.POLICY_EXCLUSION):
+        out.append("restricted_extension_scope")
     return out

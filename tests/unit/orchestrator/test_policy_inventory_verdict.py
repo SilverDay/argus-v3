@@ -121,8 +121,13 @@ def test_skip_reasons_other_than_policy_make_incomplete():
     f = facts()
     f.coverage.record_skip(SkipReason.TOO_LARGE_FOR_ENGINE)
     assert evaluate(f, CFG)[0] is Verdict.INCOMPLETE
-    f = facts()
+    f = facts(files_discovered=3)
     f.coverage.record_skip(SkipReason.POLICY_EXCLUSION)
+    f.restricted_scope = True
+    assert evaluate(f, CFG) == (Verdict.INCOMPLETE, ["restricted_extension_scope"])   # spec §15.2 #6
+    f.threats.append(threat())
+    assert evaluate(f, CFG)[0] is Verdict.THREAT
+    f = facts()                          # allow-list configured, but every file was in scope
     f.restricted_scope = True
     assert evaluate(f, CFG) == (Verdict.CLEAN, ["no_detections", "restricted_extension_scope"])
 

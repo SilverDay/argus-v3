@@ -619,3 +619,13 @@ async def test_many_detections_fit_on_state_socket(harness, env):
     (payload,) = [json.loads(l)["payload"] for l in sent if b'"verdict","scan_id"' in l or b'"event_type":"verdict"' in l]
     assert payload["verdict"] == "THREAT" and payload["threat_count"] == 1500
     assert len(payload["threats"]) <= 20
+
+
+async def test_allow_list_exclusions_are_incomplete(harness, env):
+    """Spec §15.2 #6 (1.5.9): files outside scan.allow_extensions are not inspected -> never CLEAN."""
+    orch, *_, events, _ = harness({"scan": {"allow_extensions": ["pdf"]}})
+    await start(orch)
+    await run_scan(orch)
+    v = verdicts(events)[0]
+    assert v["verdict"] == "INCOMPLETE" and "restricted_extension_scope" in v["reason_codes"]
+    assert v["coverage"]["skip_reasons"] == {"policy_exclusion": 2}

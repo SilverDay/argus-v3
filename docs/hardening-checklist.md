@@ -37,7 +37,7 @@ Owner decisions (Phase 11):
 | Requirement | Status | Implementation |
 |---|---|---|
 | USBGuard default deny, mass storage only | scripted, validated | `allow with-interface equals { 08:*:* }`, `ImplicitPolicyTarget=block`, IPC root only, `usbguard-dbus` masked |
-| Composite with HID rejected at the authorization layer | scripted, validated / Pi | `reject with-interface one-of { 03:*:* }` before the allow rule; **acceptance on the Pi** with a keyboard and a stick + HID composite |
+| Composite with HID rejected at the authorization layer | scripted, validated / Pi | `block with-interface one-of { 03:*:* }` before the allow rule (owner decision 1.5.8: `block` keeps the device enumerated but unauthorised, so the orchestrator records `usb_policy_blocked` deterministically; `reject` would remove it first); **acceptance on the Pi** with a keyboard and a stick + HID composite |
 | Broker uses sysfs identifiers, not /dev paths | validated | `src/broker` (Phase 2 tests) |
 | Read-only, noexec,nodev,nosuid mounts; gid/dmask/fmask for non-POSIX | validated | `src/broker/mounts.py`, mountinfo verification (Phase 2) |
 | Automount prevention | scripted | `udisks2` masked (warning if installed), no gvfs on Lite |

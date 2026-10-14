@@ -158,7 +158,7 @@ fi
 systemctl disable getty@tty1.service >/dev/null 2>&1 || true   # tty1 belongs to the kiosk
 
 # --- 12. USBGuard (last) -----------------------------------------------------------------------------------------------
-log "USBGuard policy (mass storage only; HID rejected)"
+log "USBGuard policy (mass storage only; HID blocked)"
 cat <<'EOF'
 From now on USB keyboards, mice and hubs are REJECTED/BLOCKED on this station.
 Continue administration over SSH (if enabled) or the serial console.

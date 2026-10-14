@@ -63,7 +63,10 @@ def _read_protected_file(path: str) -> bytes:
         if st.st_size > MAX_SECRET_BYTES:
             raise SecretError(f"secret file {path} is too large")
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            return fh.read(MAX_SECRET_BYTES + 1)
+            data = fh.read(MAX_SECRET_BYTES + 1)
+        if len(data) > MAX_SECRET_BYTES:          # grew after fstat (or a pseudo file): refuse
+            raise SecretError(f"secret file {path} is too large")
+        return data
     finally:
         os.close(fd)
 

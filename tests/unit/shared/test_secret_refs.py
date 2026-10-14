@@ -74,3 +74,24 @@ def test_env_ref_and_override(tmp_path, monkeypatch):
 def test_invalid_refs(ref):
     with pytest.raises(SecretError):
         validate_ref(ref)
+
+
+def test_size_enforced_on_the_bytes_actually_read(tmp_path, monkeypatch):
+    """The fstat size check alone is not enough: a file growing between fstat and read
+    must still be refused, never returned oversized."""
+    import os as _os
+    from src.shared import secret_refs
+    p = tmp_path / "grows"
+    p.write_bytes(b"k" * 16)
+    os.chmod(p, 0o600)
+    real_fstat = _os.fstat
+
+    def growing_fstat(fd):
+        st = real_fstat(fd)
+        with open(p, "ab") as fh:                      # grows right after the size check
+            fh.write(b"k" * (secret_refs.MAX_SECRET_BYTES + 10))
+        return st
+
+    monkeypatch.setattr(secret_refs.os, "fstat", growing_fstat)
+    with pytest.raises(secret_refs.SecretError, match="too large"):
+        secret_refs.resolve_secret(f"file:{p}")

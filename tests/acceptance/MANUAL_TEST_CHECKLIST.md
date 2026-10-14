@@ -60,7 +60,7 @@ Station idle and nobody waiting to scan. Run `RA run --destructive --only AC-S05
 |---|---|---|---|
 | AC-S05 | wrong PINs (a value the PIN policy forbids, so it can never be the real PIN) sent as the GUI account until lockout; `usb-scan-gui` restarted; a new GUI connection still reads `locked_out=true` | | |
 | AC-R01 (clamd) | `clamav-daemon.socket` + `.service` stopped → NOT_READY `clamav_unavailable` within 2 health intervals; started → IDLE | | |
-| AC-R04 (crash) | SIGKILL to the orchestrator → back to IDLE/NOT_READY within 30 s, new PID | | |
+| AC-R04 (crash + hang) | SIGKILL, then SIGSTOP (watchdog path) to the orchestrator → each time a new PID reports IDLE/NOT_READY within 30 s | | |
 
 ## 3. Manual functional and security steps
 
@@ -94,11 +94,9 @@ Then run `RA scans --since-seq <baseline seq>` and copy the matching line.
 | 3.2.4 | `RA watch-mounts --seconds 300`, then insert M1 and M3 (FAT32 and ext4) | Every mount `ro,noexec,nosuid,nodev,nosymfollow`, block device and disk read-only. Exit code 0, "PASS AC-S03". | | |
 | 3.2.5 | While M1 is mounted (during SCANNING): `touch <mount>/x` as root and as usbscan | Read-only file system / permission denied | | |
 
-Note on 3.2.2: USBGuard's `reject` target removes the device from the system. The
-orchestrator may then see it disappear (`device_gone`) before it can read
-`authorized=0`, and the rejection is then not recorded as `usb_policy_blocked`. If this
-happens, record it here and raise it (policy option: `block` instead of `reject` for the
-HID rule).
+Note on 3.2.2: the HID rule uses USBGuard `block` (spec 1.5.8). The device stays enumerated
+but unauthorised; no driver binds to any of its interfaces. The station shows REJECTED until
+it is removed. A `device_gone` reason instead of `usb_policy_blocked` is a FAIL.
 
 ### 3.3 Operator PIN pad (AC-S06 visual)
 
@@ -115,18 +113,15 @@ HID rule).
 | 4.3 | AC-S01 reboot: `systemctl reboot`, then `RA run --only AC-S01` | PASS: marker from before the reboot is gone | | |
 | 4.4 | AC-R01 signatures: note `signature_age_hours` from the last health event. Set `clamav.max_signature_age_hours` to a value below it, then `systemctl restart usb-scan-orchestrator` | NOT_READY `signatures_stale`; restore the value, restart → IDLE | | |
 | 4.5 | AC-R01 disk space: `df -m /var/lib/usb-scan`. Set `health.min_free_disk_mb` above the free space, restart the orchestrator | NOT_READY `disk_space_low`; restore, restart → IDLE | | |
-| 4.6 | AC-R04 hang (watchdog): `systemctl kill -s SIGSTOP --kill-whom=main usb-scan-orchestrator`; time until the station is IDLE again | systemd aborts the unit after `WatchdogSec`, then restarts it. Record the time and `systemctl show usb-scan-orchestrator -p WatchdogUSec,TimeoutAbortUSec,RestartUSec,NRestarts` | | |
 | 4.7 | Boot to IDLE: power-cycle and measure time from power-on to the IDLE screen | Record the value (FR target from the spec) | | |
 
 Notes:
 - 4.4 and 4.5 change `/etc/usb-scan/scan_station.yaml`, which is on the persistent
   partition. Restore the original values. Leave 5 minutes between orchestrator restarts
   (start limit).
-- 4.6: a SIGSTOP'ed process cannot act on the watchdog's SIGABRT, so systemd waits for
-  `TimeoutAbortSec` before SIGKILL. This is the worst case. A process that hangs while
-  running is terminated by SIGABRT at once. With `WatchdogSec=30` (spec §11) plus
-  `RestartSec`, hang recovery cannot finish within 30 s. Record the measured value. See the
-  open question in docs/acceptance-notes.md.
+- AC-R04 (section 2) covers the crash (SIGKILL) and the hang (SIGSTOP: watchdog abort
+  after `WatchdogSec=15`, SIGKILL after `TimeoutAbortSec=5`, restart after `RestartSec=2`).
+  Both must finish within 30 s (spec §11, 1.5.8).
 
 ## 5. After the run
 
@@ -157,7 +152,7 @@ Notes:
 | R01 | `test_not_ready_and_recovery`, `test_stale_signatures_not_ready`, `test_low_disk_space_not_ready_and_recovery`, `test_invalid_clock_not_ready`, `test_broker_down_not_ready`, `test_synthetic.py::test_missed_detection_fails_closed_until_a_later_pass` | AC-R01, 4.4, 4.5 |
 | R02 | – (needs hardware) | 4.1 |
 | R03 | `test_interrupted_scan_recovered_after_restart`, events store durability tests | 4.2 |
-| R04 | – (systemd) | AC-R04, 4.6 |
+| R04 | – (systemd) | AC-R04 |
 
 ## Sign-off
 

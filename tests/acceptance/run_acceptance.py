@@ -219,7 +219,7 @@ def check_s04(st: Station, config: str) -> Result:
 
 
 def check_s02(st: Station, base: dict | None) -> Result:
-    r = Result("AC-S02", "HID / HID+storage composite rejected by USBGuard and recorded")
+    r = Result("AC-S02", "HID / HID+storage composite blocked by USBGuard and recorded")
     if base is None:
         r.status = SKIP
         r.note("no baseline: run 'baseline', insert the keyboard and the composite device, then run again")
@@ -232,8 +232,9 @@ def check_s02(st: Station, base: dict | None) -> Result:
     try:
         rules = subprocess.run(["usbguard", "list-rules"], capture_output=True, text=True, timeout=30)
         r.evidence["usbguard_list_rules"] = rules.stdout.strip().splitlines()
-        if rules.returncode != 0 or "03:*:*" not in rules.stdout:
-            r.fail("usbguard does not report the HID reject rule")
+        hid = [line for line in rules.stdout.splitlines() if "03:*:*" in line]
+        if rules.returncode != 0 or not hid or not all(" block " in f" {line} " for line in hid):
+            r.fail("usbguard does not report the HID 'block' rule (spec 1.5.8)")
     except (OSError, subprocess.TimeoutExpired) as exc:
         r.fail(f"usbguard list-rules failed: {exc}")
     if hid_late:
@@ -243,8 +244,11 @@ def check_s02(st: Station, base: dict | None) -> Result:
     if not blocked:
         r.status = FAIL if r.status == FAIL else PENDING
         r.note("no usb_policy_blocked rejection recorded since the baseline; insert the HID test devices "
-               "(see checklist; a 'device_gone' rejection means USBGuard removed the device before it "
-               "could be recorded)")
+               "(checklist 3.2.1/3.2.2)")
+    gone = [e for e in rejected if e["payload"].get("reason") == "device_gone"]
+    if gone:
+        r.note(f"{len(gone)} device_gone rejection(s): device removed before it was recorded; "
+               "with the 'block' rule this only happens when the device is pulled within the debounce time")
     return r
 
 
@@ -359,29 +363,40 @@ def check_r01(st: Station) -> Result:
     return r
 
 
-def check_r04(st: Station) -> Result:
-    r = Result("AC-R04", f"Crashed orchestrator recovered within {R04_LIMIT_SECONDS} s")
-    unit = "usb-scan-orchestrator"
-    before = st.unit_props(unit, "MainPID", "NRestarts")
-    if int(before.get("NRestarts", "0") or 0) >= 2:
-        r.status = SKIP
-        r.note("orchestrator already restarted twice; a third restart within 5 min would trip the start limit")
-        return r
+def _recover(st: Station, unit: str, signal: str) -> dict:
+    """Send ``signal`` to the unit's main process; time until a new process reports a state."""
+    before = st.unit_props(unit, "MainPID")
     seq = st.events.max_seq()
     t0 = time.monotonic()
-    st.systemctl("kill", "-s", "SIGKILL", "--kill-whom=main", unit)
-    ev = _state_wait(st, seq, lambda p: p.get("state") in ("IDLE", "NOT_READY"), 120)
+    st.systemctl("kill", "-s", signal, "--kill-whom=main", unit)
+    ev = _state_wait(st, seq, lambda p: p.get("state") in ("IDLE", "NOT_READY"), 180)
     elapsed = time.monotonic() - t0
-    after = st.unit_props(unit, "MainPID", "NRestarts", "ActiveState")
-    r.evidence = {"before": before, "after": after, "recovered_after_s": round(elapsed, 1),
-                  "state": ev["payload"] if ev else None}
-    if ev is None:
-        r.fail("no IDLE/NOT_READY state after the crash")
-    elif elapsed > R04_LIMIT_SECONDS:
-        r.fail(f"recovery took {elapsed:.1f} s")
-    if after.get("MainPID") == before.get("MainPID"):
-        r.fail("orchestrator was not restarted")
-    r.note("hang detection (watchdog, WatchdogSec=30): see the checklist")
+    after = st.unit_props(unit, "MainPID", "NRestarts", "ActiveState", "Result")
+    return {"signal": signal, "pid_before": before.get("MainPID"), "after": after,
+            "recovered_after_s": round(elapsed, 1), "state": ev["payload"] if ev else None,
+            "recovered": ev is not None and after.get("MainPID") not in ("0", before.get("MainPID"))}
+
+
+def check_r04(st: Station) -> Result:
+    r = Result("AC-R04", f"Crashed and hung orchestrator recovered within {R04_LIMIT_SECONDS} s")
+    unit = "usb-scan-orchestrator"
+    r.evidence["unit"] = st.unit_props(unit, "WatchdogUSec", "TimeoutAbortUSec", "RestartUSec",
+                                       "StartLimitBurst", "StartLimitIntervalUSec")
+    # Crash: the process dies -> Restart=always. Hang: SIGSTOP stops the watchdog pings ->
+    # SIGABRT after WatchdogSec (cannot act on a stopped process) -> SIGKILL after
+    # TimeoutAbortSec -> restart. SIGSTOP is therefore the worst case of a hang.
+    for name, sig in (("crash", "SIGKILL"), ("hang", "SIGSTOP")):
+        res = _recover(st, unit, sig)
+        r.evidence[name] = res
+        if not res["recovered"]:
+            r.fail(f"{name}: orchestrator not restarted or no IDLE/NOT_READY state "
+                   f"(unit {res['after'].get('ActiveState')}/{res['after'].get('Result')}; "
+                   "after a start-limit trip: systemctl reset-failed usb-scan-orchestrator)")
+        elif res["recovered_after_s"] > R04_LIMIT_SECONDS:
+            r.fail(f"{name}: recovery took {res['recovered_after_s']} s")
+        if name == "crash":
+            time.sleep(10)      # let the new process finish start-up so its watchdog is armed
+    r.note("two restarts; run at most once per 5 minutes (start limit 3 in 5 min)")
     return r
 
 

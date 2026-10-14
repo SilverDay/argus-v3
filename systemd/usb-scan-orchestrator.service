@@ -21,10 +21,13 @@ Group=usbscan
 ExecStart=/opt/usb-scan/.venv/bin/python -m src.orchestrator --config /etc/usb-scan/scan_station.yaml
 WorkingDirectory=/opt/usb-scan
 Restart=always
-RestartSec=5
-# Spec §11: watchdog recovery within 30 s; 3 restarts in 5 minutes -> stays failed (NOT_READY
-# on the screen is shown by the GUI as "service unavailable").
-WatchdogSec=30
+RestartSec=2
+# Spec §11 (1.5.8): crash or hang recovered within 30 s; 3 restarts in 5 minutes -> stays
+# failed (NOT_READY on the screen is shown by the GUI as "service unavailable").
+# Hang budget: WatchdogSec 15 (pinged every 7.5 s) + TimeoutAbortSec 5 (SIGABRT, then SIGKILL)
+# + RestartSec 2 + start-up. Without TimeoutAbortSec the abort would wait TimeoutStopSec.
+WatchdogSec=15
+TimeoutAbortSec=5
 TimeoutStopSec=30
 
 StateDirectory=usb-scan/orchestrator

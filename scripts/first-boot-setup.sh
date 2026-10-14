@@ -81,6 +81,8 @@ new_key() {  # path group
 }
 new_key "$SECRETS/broker-hmac.key" usbscan                  # broker (root) + orchestrator
 new_key "$SECRETS/events-checkpoint.key" usbscan-events     # events service only
+# Off-device pseudonyms (spec §15.2 #3). Escrow this and the checkpoint key (docs/secret-recovery.md).
+new_key "$SECRETS/pseudonymization.key" usbscan-events
 
 # --- 6. ClamAV ----------------------------------------------------------------------------------------
 log "ClamAV settings (config/clamd.conf.recommended)"

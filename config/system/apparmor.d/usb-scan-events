@@ -20,7 +20,14 @@ profile usb-scan-events flags=(complain) {
   include <abstractions/nameservice>
   include <abstractions/openssl>
   include <abstractions/ssl_certs>
-  /etc/usb-scan/secrets/events-checkpoint.key r,
+  /etc/usb-scan/secrets/{events-checkpoint,pseudonymization,station-mtls}.key r,
+  # mTLS station certificate (scripts/station-cert.sh), site CA bundles, systemd credentials
+  # (alert/forwarding tokens via credential: references)
+  /etc/usb-scan/station-mtls.crt r,
+  /etc/usb-scan/pki/ r,
+  /etc/usb-scan/pki/** r,
+  /run/credentials/usb-scan-events.service/ r,
+  /run/credentials/usb-scan-events.service/* r,
   /var/lib/usb-scan/events/ rw,
   /var/lib/usb-scan/events/** rwk,
   /run/usb-scan/events.sock rw,

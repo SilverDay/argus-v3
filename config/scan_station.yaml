@@ -217,8 +217,8 @@ admin_web:
 logging:
   level: INFO
   file: /var/log/usb-scan/usb-scan.jsonl
-  filename_privacy: hash                # plain | hash | omit
-  pseudonymization_key_ref: ""
+  filename_privacy: hash                # plain | hash | omit (off-device); hash = keyed HMAC pseudonyms
+  pseudonymization_key_ref: file:/etc/usb-scan/secrets/pseudonymization.key   # escrowed, see docs/secret-recovery.md
   syslog:
     enabled: false
     host: ""

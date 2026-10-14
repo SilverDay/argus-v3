@@ -115,9 +115,10 @@ than one station justifies.
 
 ---
 
-## ADR-006 — Named OIDC accounts with MFA instead of a shared admin PIN
+## ADR-006 — Named accounts with MFA instead of a shared admin PIN
 
-**Status:** accepted (spec §10.2, 1.5.5; provider-neutral in 1.5.9)
+**Status:** accepted (spec §10.2, 1.5.5; provider-neutral in 1.5.9; local accounts as a regular
+method in 1.5.10)
 
 **Context.** A shared PIN cannot say *who* did something and cannot be revoked per person.
 
@@ -125,7 +126,12 @@ than one station justifies.
 - Remote administration uses OIDC: authorization code with PKCE, nonce and JWKS rotation.
 - MFA is proven by the `amr`/`acr` claims.
 - Roles `admin`/`operator`/`viewer` are mapped from IdP groups.
-- Local named accounts (bcrypt) only for isolated networks, and only with OIDC disabled.
+- Local named accounts are a second method, alone or alongside OIDC (1.5.10):
+  - bcrypt passphrase plus TOTP (RFC 6238) by default;
+  - managed with a root-only, audited CLI on the station;
+  - sessions re-checked on every request.
+  Sites that run without an IdP still get named, individually revocable accounts with a
+  second factor.
 - The operator PIN is limited to the local touchscreen overlay.
 
 **Consequences.**

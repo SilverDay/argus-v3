@@ -122,10 +122,37 @@ The touchscreen should show **"Insert a USB device"**.
 |---|---|
 | YARA rules | deployment.md §4: install the minisign public key, then a signed bundle (`python -m src.yara_worker.install`), set `yara.enabled: true`, `systemctl enable --now usb-scan-yara` |
 | Evidence quarantine (LUKS2 USB SSD) | deployment.md §5: `scripts/setup-quarantine.sh`, escrow the recovery passphrase |
-| Admin web + OIDC | below, and admin-guide.md §2 |
+| Admin web: OIDC and/or local accounts | below, and admin-guide.md §2 |
 | SIEM forwarding with mTLS | admin-guide.md §5, `scripts/station-cert.sh` |
 | Alerts | admin-guide.md §5 |
 | VirusTotal | deployment.md §6a: per-site opt-in after privacy approval |
+
+### Admin web sign-in
+
+The admin web supports single sign-on (OIDC), local accounts (username + passphrase +
+authenticator code), or both (spec §10.2, 1.5.10). Common steps:
+
+1. Set `admin_web.enabled: true` and `admin_web.public_url`.
+2. Put a TLS reverse proxy (nginx/caddy) with a certificate from your PKI in front of
+   `127.0.0.1:8080`.
+3. Run `systemctl enable --now usb-scan-admin`.
+
+**Local accounts only** (no IdP):
+
+```yaml
+auth:
+  web:
+    oidc_enabled: false
+    local_enabled: true
+```
+
+```
+cd /opt/usb-scan
+sudo .venv/bin/python -m src.web.accounts_admin add j.doe --role admin
+```
+
+The tool asks for the passphrase twice. It then shows the authenticator key (URI and text)
+and asks for a code from the app. Details: admin-guide.md §2.2.
 
 ### OIDC provider (generic)
 

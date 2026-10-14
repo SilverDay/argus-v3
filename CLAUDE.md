@@ -21,7 +21,8 @@ Plan: docs/USB-Scan-Station-Implementation-Plan-v1.5.md
 - `src/led/` — GPIO LED controller (group: gpio). Native lgpio ONLY (python3-lgpio); not the
   rpi-lgpio shim. Subscribes to the orchestrator state socket directly.
 - `src/web/` — Flask + HTMX admin UI (user: usbscan-web). OIDC/SSO + MFA for remote
-  admin. Local named-account fallback only for isolated networks. No shared PIN for admin.
+  admin and/or local named accounts (bcrypt + TOTP, managed by root CLI src.web.accounts_admin,
+  spec 1.5.10). No shared PIN or shared account for admin.
   READ-ONLY (no privileged actions); vendored htmx/Chart.js, strict CSP; every data
   access audited via events.sock (fail closed).
 - `src/events/` — Durable event/logging service (user: usbscan-events).

@@ -48,11 +48,18 @@ front (spec §9.1).
     login, so a leaked `state` can neither log in an attacker nor cancel the real login
     (tested).
   - The login start is a POST with the login-form CSRF token, which prevents login CSRF.
-- **Local fallback.**
-  - Only when OIDC is disabled and `local_fallback_allowed` is set (config validation;
-    spec §10.2).
-  - Individual named accounts from a secret-referenced file (`username:role:bcrypt`, cost ≥ 12
-    enforced at load).
+- **Local accounts** (spec 1.5.10: a regular method, alone or next to OIDC; `local_enabled`).
+  - Individual named accounts from `file:` `auth.web.local.accounts_ref`
+    (`username:role:bcrypt[:totp_seed[:disabled]]`, cost ≥ 12 enforced at load), written only by
+    the root CLI `src.web.accounts_admin`. Every change is audited first (fail closed).
+  - The file is re-read when it changes; an unparseable or world-readable file disables local
+    sign-in (fail closed).
+  - TOTP second factor (RFC 6238, SHA-1/6 digits/30 s, ±1 step), verified against the RFC 6238
+    and RFC 4226 test vectors. The last accepted step per account is stored, so a code cannot be
+    replayed. `require_totp: false` is a documented deviation (start-up warning; sessions marked
+    `local` instead of `local+totp`).
+  - Local sessions are re-checked on every request: a disabled, removed or re-roled account
+    loses its sessions immediately; the CLI also deletes them on credential changes.
   - Passphrases over 72 bytes are refused before bcrypt (bcrypt 5.0).
   - Unknown usernames cost one bcrypt check too, against a dummy hash.
   - Persistent lockout per account and per client address.

@@ -55,11 +55,55 @@ match means no access.
   - bound to the client address;
   - signing out ends the session on the server.
 
-**Local accounts** (isolated networks only, `local_fallback_allowed: true` with OIDC
-disabled):
-- Each account is a line `username:role:bcrypt-hash` (cost ≥ 12) in a secret-referenced
-  file.
-- Never create shared accounts.
+### 2.1 Sign-in methods
+
+OIDC and local accounts are independent (spec §10.2, 1.5.10). Enable one or both:
+
+```yaml
+auth:
+  web:
+    oidc_enabled: true            # single sign-on (MFA from the IdP)
+    local_enabled: true           # username + passphrase + authenticator code
+    local:
+      require_totp: true          # default; false is a documented deviation from spec §10.2
+      min_passphrase_length: 12
+```
+
+With both enabled, the sign-in page shows the SSO button and the account form.
+
+### 2.2 Local accounts
+
+Manage them on the station as root. Each account is a named person; never create shared
+accounts.
+
+```
+cd /opt/usb-scan
+sudo .venv/bin/python -m src.web.accounts_admin add j.doe --role operator   # passphrase twice + authenticator
+sudo .venv/bin/python -m src.web.accounts_admin list
+sudo .venv/bin/python -m src.web.accounts_admin passwd j.doe
+sudo .venv/bin/python -m src.web.accounts_admin totp j.doe      # new phone: re-enrol
+sudo .venv/bin/python -m src.web.accounts_admin role j.doe admin
+sudo .venv/bin/python -m src.web.accounts_admin disable j.doe   # or enable / remove
+```
+
+- **Passphrase:** typed twice without echo, at least `min_passphrase_length` characters, at
+  most 72 bytes; it must not contain the username. It is stored as bcrypt cost 12.
+- **Authenticator (TOTP, RFC 6238).** At `add` and `totp` the tool shows a key once, as an
+  `otpauth://` URI and as text. It saves the key only after the person enters a valid code
+  from their app. Any standard authenticator app works (SHA-1, 6 digits, 30 s).
+  - **Do not copy the key** into tickets or mail. Clear the terminal afterwards.
+- **Audit and fail closed.** Every change is written to the audit chain first (`web_auth`,
+  `result: account_change`, with the acting sudo user). If the audit log is unavailable,
+  nothing changes.
+- **Effect.** Changes apply at once, without a restart: the web re-reads
+  `/etc/usb-scan/secrets/web-accounts`. Disabling, removing, changing the role, the
+  passphrase or the authenticator also ends that person's open sessions.
+- **Lockout.** After `max_failed_attempts` failures (wrong passphrase or code) the account
+  and the client address are locked for `lockout_minutes`. A replayed code counts as a
+  failure.
+- **Persistence.** The accounts file is on the data partition (`/etc/usb-scan`), so changes
+  need no maintenance window. Include it in the station backup like the other secrets
+  (docs/secret-recovery.md).
 
 ## 3. Operator PIN
 

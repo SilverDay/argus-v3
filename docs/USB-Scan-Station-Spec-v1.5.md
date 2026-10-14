@@ -1,6 +1,6 @@
 # USB Scan Station — Software Specification
 
-**Version:** 1.5.9 DRAFT  
+**Version:** 1.5.10 DRAFT  
 **Date:** 14 October 2026  
 **Baseline:** v1.5 DRAFT (13 October 2026)  
 **Target hardware:** Raspberry Pi 5 (8 GB RAM), High-Endurance/Industrial microSD, Pi 5 Active Cooler  
@@ -278,7 +278,7 @@ Persistent paths mapped to the data partition include: `/var/lib/usb-scan/` (dat
 
 - VirusTotal is advisory-only (§15.2 #4, 1.5.9): `virustotal.enabled=true` requires a credential reference; there is no mandatory role.
 - `yara.role=mandatory` requires a valid signed, compiled ruleset, otherwise station is NOT_READY.
-- `auth.web.require_mfa=true` is mandatory for OIDC.
+- `auth.web.require_mfa=true` is mandatory for OIDC; `admin_web.enabled` requires `auth.web.oidc_enabled` and/or `auth.web.local_enabled`; local accounts require a `file:` accounts reference (1.5.10).
 - Non-empty `allow_extensions` constitutes a restricted policy scope and requires prominent report/UI disclosure; files outside it make the result INCOMPLETE (§15.2 #6, 1.5.9).
 - Quarantine is enabled only if the encrypted mount has been verified, has sufficient capacity, and export rules are explicitly set.
 - `operator_hold.enabled=true` requires `operator_hold.max_duration_seconds` to be set (range: 15–300 seconds) and `operator_hold.allowed_verdicts` to enumerate CLEAN and/or SUSPICIOUS explicitly.
@@ -330,7 +330,7 @@ Fetch signed versioned manifests and bundles over TLS; validate trust anchor/sig
 
 ### 8.3 Secrets, Authentication and Audit
 
-Store signing keys, PIN hashes, local fallback credential hashes, SMTP/VT credentials and quarantine keys outside general YAML. Minimize filesystem-readable scope using file ownership and systemd credentials. Support rotation, revocation, protected backup and disaster recovery.
+Store signing keys, PIN hashes, local account credential hashes and TOTP seeds, SMTP/VT credentials and quarantine keys outside general YAML. Minimize filesystem-readable scope using file ownership and systemd credentials. Support rotation, revocation, protected backup and disaster recovery.
 
 ---
 
@@ -354,7 +354,15 @@ A minimum six-digit numeric PIN (no factory default) unlocks the restricted touc
 
 ### 10.2 Named Remote Administrator Authentication
 
-Remote administration SHALL use individual named accounts with OIDC/SSO and MFA. A local named-account fallback with passphrases (bcrypt cost 12 or Argon2id, see §5.3) is allowed only when explicitly configured for an isolated management network where OIDC is unavailable. Shared PINs or shared passwords for remote administrative access are not permitted.
+Remote administration SHALL use individual named accounts with MFA. Two sign-in methods are available and may be enabled independently or together (at least one; owner decision 1.5.10):
+
+- **OIDC/SSO.** MFA is proven by the ID token (`amr`/`acr`).
+- **Local named accounts.** Username + passphrase (bcrypt cost 12; at least `min_passphrase_length` characters, default 12, at most 72 bytes) plus a TOTP second factor (RFC 6238; required by default via `auth.web.local.require_totp`).
+  - **TOTP off:** a site may disable TOTP as a documented deviation. It is logged at start-up, and sessions are marked `local` instead of `local+totp` in the audit chain.
+  - **Account management:** a root-only tool on the station (`python -m src.web.accounts_admin`). Every change is recorded in the audit chain first (fail closed). Disabling, removing or re-roling an account ends its sessions at once.
+  - **Lockout:** per account and per client address.
+
+Shared PINs or shared passwords for remote administrative access are not permitted.
 
 ---
 
@@ -453,7 +461,8 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | 1.5.6 DRAFT | 13 October 2026 | Deployment (owner decisions): optional quarantine on a separate LUKS2 medium unlocked at boot by a root-only keyfile, with an escrowed recovery passphrase (§3.6, §8.3); YARA rulesets installable offline and optionally pulled over HTTPS, activated only after signature/hash/compile/rollback checks with an atomic switch (§7.3); service crash loops (3 restarts in 5 minutes) enforced by systemd start limits (§11); USBGuard rejects any HID-bearing device and authorises only all-mass-storage devices (§8.2). |
 | 1.5.7 DRAFT | 13 October 2026 | Host hardening (owner decisions): AppArmor profiles for all station services shipped in complain mode and promoted to enforce after on-device tuning (§8.1); outbound traffic restricted to a per-service allowlist in addition to default-deny inbound (§8.1); read-only root via `overlayroot=tmpfs:recurse=0` so the persistent data partition is not overlaid, with ClamAV signatures on the persistent partition and scanning disabled during the writable maintenance window (§5.3). |
 | 1.5.8 DRAFT | 14 October 2026 | Acceptance (owner decisions): orchestrator hang recovery within 30 s (`WatchdogSec=15`, `TimeoutAbortSec=5`, `RestartSec=2`; §11, AC-R04 covers crash and hang); USBGuard HID rule uses `block` instead of `reject` so the rejection is recorded deterministically in the audit chain (§8.2, AC-S02); VirusTotal hash sharing approved as per-site opt-in, disabled by default (§15.2 #3); GUI ships English and German. |
-| **1.5.9 DRAFT** | **14 October 2026** | Open decisions §15.2 #2–#6 resolved by the owner: on-device key + CSR enrolment for the station mTLS identity, provider-neutral OIDC with roles admin/operator/viewer (#2); keyed HMAC pseudonyms off-device, retention 180 d audit / 30 d quarantine adjustable per site, quarantine optional and off by default (#3); VirusTotal advisory-only, mandatory role removed (#4, §6.2); escrow of history-protecting secrets and regeneration of the rest (#5); allow-list-scoped scans never CLEAN when files were excluded (#6, §6.2). |
+| 1.5.9 DRAFT | 14 October 2026 | Open decisions §15.2 #2–#6 resolved by the owner: on-device key + CSR enrolment for the station mTLS identity, provider-neutral OIDC with roles admin/operator/viewer (#2); keyed HMAC pseudonyms off-device, retention 180 d audit / 30 d quarantine adjustable per site, quarantine optional and off by default (#3); VirusTotal advisory-only, mandatory role removed (#4, §6.2); escrow of history-protecting secrets and regeneration of the rest (#5); allow-list-scoped scans never CLEAN when files were excluded (#6, §6.2). |
+| **1.5.10 DRAFT** | **14 October 2026** | Admin sign-in (owner decisions): OIDC is optional; local named accounts (username/passphrase) are a regular sign-in method, alone or alongside OIDC, no longer restricted to isolated networks; local accounts use a TOTP second factor by default (a site may disable it as a documented deviation); accounts are managed with a root-only, audited CLI on the station (§10.2, §6.2). |
 
 ### 15.2 Implementation Decisions Still Requiring Prototype or Owner Approval
 

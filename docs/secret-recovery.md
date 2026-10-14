@@ -22,6 +22,7 @@ logs, tickets or chat.
 | Quarantine keyfile | `quarantine.key` | root 0400 | unattended unlock of the LUKS2 medium | regenerate, then `cryptsetup luksAddKey` with the recovery passphrase |
 | Station mTLS key | `station-mtls.key` | root:usbscan-events 0640 | station identity towards the collector | regenerate: `scripts/station-cert.sh csr`; revoke the old certificate at the CA |
 | Operator PIN hash | `operator_pin.hash` | root:usbscan 0640 | touchscreen operator overlay | set a new PIN (`src.shared.pin_admin`) |
+| Local admin web accounts (optional) | `web-accounts` | root:usbscan-web 0640 | admin web sign-in (bcrypt hashes, TOTP seeds) | re-create with `src.web.accounts_admin add` (new passphrase, re-enrol the authenticator) |
 | OIDC client secret (optional) | `web_oidc_client_secret` or `credential:` | per unit | admin web ↔ IdP | issue a new secret at the IdP |
 | VirusTotal API key (optional) | `credential:` / file | per unit | VT lookups | re-provision from the vault (it is an external account credential) |
 | Alert/forwarding tokens (optional) | `credential:` | per unit | webhook/SIEM authentication | re-provision from the vault |

@@ -44,22 +44,25 @@ Files:
 | Socket-activated clamd: systemd's default `SocketMode=0666` would apply instead of `LocalSocketMode` | `systemd/clamav-daemon.socket.d/usb-scan.conf` (0660, group clamav); AC-S04 checks the clamd socket too |
 | No unit tests for the `disk_space_low` and `clock_invalid` gates | added (AC-R01) |
 
-## Open questions for the owner
+## Owner decisions (spec 1.5.8, 14 October 2026)
 
-1. **AC-R04 for a hang.**
-   - Spec §11 sets `WatchdogSec=30`. A crash (process exit) restarts after `RestartSec`.
-     That is covered by the automated check.
-   - A hung orchestrator is only detected after 30 s, then aborted, then restarted after
-     `RestartSec=5`, so hang recovery takes more than 30 s by construction.
-   - Options:
-     - accept AC-R04 as "crash" only and record hang recovery;
-     - lower `WatchdogSec` (e.g. 15 s) for the orchestrator and amend §11.
-2. **USBGuard `reject` vs `block` for the HID rule (AC-S02).**
-   - `reject` deauthorises the device *and removes it* (USBGuard rules documentation). The
-     orchestrator may then only see the device disappear (`device_gone`). The audit record
-     would not show `usb_policy_blocked`.
-   - `block` leaves the device enumerated but unauthorised (no driver binds to any
-     interface). The orchestrator then records `usb_policy_blocked` deterministically.
-   - The protection against keystroke injection is the same.
-   - The Pi run (checklist 3.2.2) shows which behaviour occurs. Changing the rule is a policy
-     decision.
+1. **AC-R04 covers crash and hang within 30 s.**
+   - The orchestrator unit uses `WatchdogSec=15` (pinged every 7.5 s), `TimeoutAbortSec=5`
+     and `RestartSec=2`.
+   - Without `TimeoutAbortSec` a watchdog abort waits `TimeoutStopSec` (30 s), because
+     systemd leaves `DefaultTimeoutAbortSec` unset.
+   - The acceptance check sends SIGKILL (crash), then SIGSTOP (hang). SIGSTOP is the worst
+     case: the stopped process cannot act on SIGABRT, so it is killed after
+     `TimeoutAbortSec`.
+   - Broker and events service keep `WatchdogSec=30`.
+2. **The USBGuard HID rule uses `block`, not `reject`.**
+   - `reject` also removes the device (USBGuard rules documentation), so the orchestrator
+     could only log `device_gone`.
+   - `block` keeps the device enumerated but unauthorised: no driver binds to any interface,
+     so the protection is the same.
+   - The audit chain then always records REJECTED / `usb_policy_blocked`. The station
+     shows REJECTED until the device is removed.
+3. **VirusTotal hash sharing is approved as a per-site opt-in.**
+   - It stays disabled by default and is hash-only (no uploads).
+   - A site enables it after its own privacy approval (spec §15.2 #3).
+4. **The GUI ships English (source) and German.**

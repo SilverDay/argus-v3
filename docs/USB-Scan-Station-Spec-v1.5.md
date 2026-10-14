@@ -1,7 +1,7 @@
 # USB Scan Station — Software Specification
 
-**Version:** 1.5.7 DRAFT  
-**Date:** 13 October 2026  
+**Version:** 1.5.8 DRAFT  
+**Date:** 14 October 2026  
 **Baseline:** v1.5 DRAFT (13 October 2026)  
 **Target hardware:** Raspberry Pi 5 (8 GB RAM), High-Endurance/Industrial microSD, Pi 5 Active Cooler  
 **Target OS:** Raspberry Pi OS Lite 64-bit (Debian 13 / Trixie), OverlayFS read-only root  
@@ -369,7 +369,7 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | Data durability | SQLite WAL with backup/restore tests, bounded queue, disk-full and corruption recovery. |
 | Thermal | CPU throttling above 80°C must trigger an alert, log the event, and halt active scans. Threshold in Celsius. |
 | Offline operation | Core ClamAV scanning works with valid local signatures; required external checks yield INCOMPLETE when unavailable. |
-| Service recovery | A crashed service must be recovered by the systemd watchdog within 30 seconds (`WatchdogSec=30` in all orchestrator/broker/events service units). Persistent crashes (3 restarts in 5 minutes) must alert and transition the station to NOT_READY. |
+| Service recovery | A crashed or hung service must be recovered within 30 seconds. Broker and events service units use `WatchdogSec=30`; the orchestrator uses `WatchdogSec=15` with `TimeoutAbortSec=5` and `RestartSec=2` so that hang detection plus restart also fits within 30 seconds (1.5.8). Persistent crashes (3 restarts in 5 minutes) must alert and transition the station to NOT_READY. |
 | Availability | Unplanned downtime caused by a recoverable service fault must not exceed the watchdog-recovery window. Planned maintenance windows for OS updates require documented pre/post-check procedures. |
 
 ---
@@ -429,7 +429,7 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | AC-R01 | Station transitions to NOT_READY when a mandatory health gate fails (ClamAV unavailable, signatures exceeded freshness threshold, insufficient disk space); transitions back to IDLE after the gate recovers. |
 | AC-R02 | 100 consecutive media insert/scan/remove cycles run without leaked mounts, device-identity confusion or service restart. |
 | AC-R03 | Power loss during scan leaves recoverable DB/config with scan marked interrupted; no invalid safe-remove indication after reboot. |
-| AC-R04 | A crashed orchestrator service is recovered by systemd watchdog within 30 seconds and the station transitions correctly to NOT_READY or IDLE after restart. |
+| AC-R04 | A crashed or hung orchestrator service is recovered by systemd (restart policy, watchdog) within 30 seconds and the station transitions correctly to NOT_READY or IDLE after restart. |
 
 ---
 
@@ -451,13 +451,14 @@ Remote administration SHALL use individual named accounts with OIDC/SSO and MFA.
 | 1.5.4 DRAFT | 13 October 2026 | Events service (owner decisions): authoritative PIN lockout state remains in the orchestrator's own SQLite database (auth attempts are additionally recorded in the audit chain) (§10.1); alert delivery moves to `usb-scan-events` together with SIEM forwarding, through per-channel durable queues with backoff and dead-lettering (§3.2 step 12, §3.7, §5.4); audit database uses `synchronous=FULL`; hash chain over canonical JSON records with HMAC checkpoints of the chain head; a failed chain verification records a tamper event and keeps the station NOT_READY until an administrator acknowledges it (§3.7, §3.8). |
 | 1.5.5 DRAFT | 13 October 2026 | Admin web UI (owner decisions): read-only interface — no configuration reload or signature-update triggers from the web process (§9.1); front-end libraries vendored and integrity-verified, strict CSP without CDN; OIDC MFA proven by ID-token `amr`/`acr` claims; per-role data minimisation (file paths and device serials for administrators only); every data access audited, failing closed when the audit log is unavailable (§3.7, §10.2). |
 | 1.5.6 DRAFT | 13 October 2026 | Deployment (owner decisions): optional quarantine on a separate LUKS2 medium unlocked at boot by a root-only keyfile, with an escrowed recovery passphrase (§3.6, §8.3); YARA rulesets installable offline and optionally pulled over HTTPS, activated only after signature/hash/compile/rollback checks with an atomic switch (§7.3); service crash loops (3 restarts in 5 minutes) enforced by systemd start limits (§11); USBGuard rejects any HID-bearing device and authorises only all-mass-storage devices (§8.2). |
-| **1.5.7 DRAFT** | **13 October 2026** | Host hardening (owner decisions): AppArmor profiles for all station services shipped in complain mode and promoted to enforce after on-device tuning (§8.1); outbound traffic restricted to a per-service allowlist in addition to default-deny inbound (§8.1); read-only root via `overlayroot=tmpfs:recurse=0` so the persistent data partition is not overlaid, with ClamAV signatures on the persistent partition and scanning disabled during the writable maintenance window (§5.3). |
+| 1.5.7 DRAFT | 13 October 2026 | Host hardening (owner decisions): AppArmor profiles for all station services shipped in complain mode and promoted to enforce after on-device tuning (§8.1); outbound traffic restricted to a per-service allowlist in addition to default-deny inbound (§8.1); read-only root via `overlayroot=tmpfs:recurse=0` so the persistent data partition is not overlaid, with ClamAV signatures on the persistent partition and scanning disabled during the writable maintenance window (§5.3). |
+| **1.5.8 DRAFT** | **14 October 2026** | Acceptance (owner decisions): orchestrator hang recovery within 30 s (`WatchdogSec=15`, `TimeoutAbortSec=5`, `RestartSec=2`; §11, AC-R04 covers crash and hang); USBGuard HID rule uses `block` instead of `reject` so the rejection is recorded deterministically in the audit chain (§8.2, AC-S02); VirusTotal hash sharing approved as per-site opt-in, disabled by default (§15.2 #3); GUI ships English and German. |
 
 ### 15.2 Implementation Decisions Still Requiring Prototype or Owner Approval
 
 1. **Throughput and readiness thresholds:** prototype benchmark must establish realistic mandatory limits and service-level objectives.
 2. **Fleet identity and mTLS bootstrap:** the mechanism for securely delivering unique mTLS certificates to individual appliances before field deployment requires explicit design and owner approval. The use of mTLS for event delivery once enrolled is decided (§9.2); the bootstrap process is not. Separately, select the organizational OIDC provider and define RBAC roles for named administrator accounts.
-3. **Privacy and retention:** approve path/serial pseudonymization, VT hash-sharing, quarantine operation and regional retention obligations.
+3. **Privacy and retention:** approve path/serial pseudonymization, quarantine operation and regional retention obligations. *VT hash-sharing resolved (1.5.8):* approved as a per-site opt-in — VirusTotal stays disabled by default; a site may enable hash-only lookups (no uploads) after its own privacy approval.
 4. **Cloud mandatory mode:** decide whether VT is advisory-only in production or a conditional mandatory stage; specify clear offline behavior.
 5. **Secret recovery:** design secure deployment, backup and key restoration compatible with unattended boots and the chosen threat model.
 6. **Threat/policy definitions:** *Resolved for the default:* prohibited extensions are policy violations with default severity SUSPICIOUS (`scan.blocked_extension_severity`, configurable to THREAT). Still open: whether any explicit extension-scoped CLEAN result is acceptable for managed OT workflows.

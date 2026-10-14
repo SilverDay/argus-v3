@@ -118,6 +118,16 @@ sudo /opt/usb-scan/scripts/setup-quarantine.sh /dev/sdX --yes-erase-all-data
 - **Self-signed certificates** are acceptable for an isolated lab only. Production uses the
   organisation's CA. Configuring the proxy is site-specific and not automated here.
 
+## 6a. VirusTotal (optional, per-site opt-in)
+
+Hash sharing is approved as a per-site opt-in (spec §15.2 #3, 1.5.8).
+- Default: `virustotal.enabled: false`.
+- Enable it only after the site's own privacy approval. Lookups send SHA-256 hashes only,
+  never files.
+- Provide the API key as a secret reference (`virustotal.api_key_ref`).
+- Re-run `scripts/harden.sh` afterwards: the firewall only opens outbound HTTPS for the
+  orchestrator account when VirusTotal is enabled in the configuration.
+
 ## 7. Recovery and maintenance
 
 | Situation | Action |
